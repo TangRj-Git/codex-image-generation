@@ -13,7 +13,16 @@ from pathlib import Path
 from . import __version__
 
 
+def _configure_utf8_output() -> None:
+    """Keep JSON, TOML, and diagnostics readable in redirected CLI output."""
+    for stream, errors in ((sys.stdout, "strict"), (sys.stderr, "backslashreplace")):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(encoding="utf-8", errors=errors)
+
+
 def main() -> None:
+    _configure_utf8_output()
     parser = argparse.ArgumentParser(description="Generate images using Codex's existing relay configuration.")
     parser.add_argument("--version", action="version", version=__version__)
     mode = parser.add_mutually_exclusive_group()

@@ -3,6 +3,8 @@ import contextlib
 import io
 import json
 import os
+import subprocess
+import sys
 import tempfile
 import tomllib
 import unittest
@@ -84,3 +86,56 @@ class CliTests(unittest.TestCase):
         status = json.loads(output.getvalue())
         self.assertFalse(status["configured"])
         self.assertFalse(status["connection_verified"])
+
+    def test_cli_unicode_output_with_ascii_process_encoding(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory).resolve() / "\u914d\u7f6e \U0001f680"
+            home.mkdir()
+            (home / "config.toml").write_text(
+                'model="fixture-model"\nmodel_provider="relay"\n'
+                '[model_providers.relay]\nbase_url="https://relay.invalid/v1"\n'
+                'env_key="RELAY_KEY"\n', encoding="utf-8",
+            )
+            # Keep runtime discovery variables without inheriting real credentials.
+            runtime_names = {
+                "PATH", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "TMPDIR",
+                "HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA",
+            }
+            env = {key: value for key, value in os.environ.items() if key.upper() in runtime_names}
+            env.update(PYTHONIOENCODING="ascii", PYTHONUTF8="0", RELAY_KEY="fake-test-secret")
+            outputs = {}
+            for mode in ("--print-config", "--check"):
+                with self.subTest(mode=mode):
+                    result = subprocess.run(
+                        [sys.executable, "-B", "-m", "gpt_image_generation", mode, "--codex-home", str(home)],
+                        cwd=directory, env=env, capture_output=True, timeout=30,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr.decode("utf-8"))
+                    outputs[mode] = result.stdout.decode("utf-8")
+                    self.assertIn(str(home).replace("\\", "\\\\"), outputs[mode])
+                    self.assertNotIn("fake-test-secret", outputs[mode])
+            config = tomllib.loads(outputs["--print-config"])["mcp_servers"]["image_generation"]
+            self.assertEqual(config["args"][-1], str(home))
+            self.assertTrue(json.loads(outputs["--check"])["configured"])
+
+            script = (
+                "import sys; from gpt_image_generation.cli import main; "
+                "sys.argv=['\\u56fe\\u7247\\U0001f680', '--help']; main()"
+            )
+            result = subprocess.run(
+                [sys.executable, "-B", "-c", script], cwd=directory, env=env,
+                capture_output=True, timeout=30,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr.decode("utf-8"))
+            self.assertIn("\u56fe\u7247\U0001f680", result.stdout.decode("utf-8"))
+
+            invalid = home / "invalid"
+            invalid.mkdir()
+            (invalid / "config.toml").write_text("model = [", encoding="utf-8")
+            result = subprocess.run(
+                [sys.executable, "-B", "-m", "gpt_image_generation", "--print-config", "--codex-home", str(invalid)],
+                cwd=directory, env=env, capture_output=True, timeout=30,
+            )
+            self.assertEqual(result.returncode, 1)
+            self.assertNotIn("UnicodeEncodeError", result.stderr.decode("utf-8"))
+            self.assertTrue(result.stderr.decode("utf-8").strip())

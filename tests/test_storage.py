@@ -138,11 +138,27 @@ class StorageTests(unittest.TestCase):
         with self.assertRaisesRegex(ImageToolError, "预留"):
             prepare_save(str(self.cwd), filename="asset.jpg")
 
-    @unittest.skipUnless(os.name == "nt", "Windows filenames are case-insensitive")
-    def test_reservation_normalizes_windows_case(self):
-        self.plan(filename="Asset.PNG")
-        with self.assertRaisesRegex(ImageToolError, "预留"):
-            prepare_save(str(self.cwd), output_dir=".", filename="asset.png")
+    def test_reservation_shares_case_and_unicode_equivalent_stems(self):
+        for first_name, second_name in [
+            ("Asset.PNG", "asset.png"),
+            ("Caf\u00e9.png", "Cafe\u0301.webp"),
+            ("Stra\u00dfe.png", "STRASSE.jpg"),
+        ]:
+            with self.subTest(first=first_name, second=second_name):
+                first = self.plan(filename=first_name)
+                self.assertEqual(first.filename, first_name)
+                with self.assertRaisesRegex(ImageToolError, "预留"):
+                    prepare_save(str(self.cwd), output_dir=".", filename=second_name)
+                first.release()
+                second = self.plan(filename=second_name)
+                self.assertEqual(second.filename, second_name)
+                second.release()
+
+    def test_same_stem_in_different_directories_has_independent_reservations(self):
+        first = self.plan(output_dir="one", filename="Asset.png")
+        second = self.plan(output_dir="two", filename="asset.png")
+        self.assertNotEqual(first.output_dir, second.output_dir)
+        self.assertEqual(len(list(self.cwd.rglob(".codex-image-*.lock"))), 2)
 
     def test_reservation_blocks_another_process(self):
         self.plan(filename="asset.png")

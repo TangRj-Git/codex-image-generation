@@ -10,6 +10,7 @@ import re
 import shutil
 import stat
 import tempfile
+import unicodedata
 import warnings
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -123,8 +124,12 @@ class SavePlan:
         return self.cwd
 
     def _lock_path(self, filename: str) -> Path:
-        canonical = os.path.normcase(os.path.normpath(str(self.output_dir / Path(filename).stem)))
-        digest = hashlib.sha256(os.fsencode(canonical)).hexdigest()[:32]
+        # Locks live in the target directory, so only the stem identifies them.
+        # Conservatively share reservations on case/normalization equivalents,
+        # including macOS volumes whose rules differ from os.path.normcase().
+        canonical = unicodedata.normalize("NFC", Path(filename).stem)
+        canonical = unicodedata.normalize("NFC", canonical.casefold())
+        digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:32]
         return self.output_dir / f".codex-image-{digest}.lock"
 
     def _acquire(self, filename: str) -> Path:

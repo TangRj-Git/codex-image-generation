@@ -1,0 +1,18 @@
+# 可选：从固定位置的本地 wheel 启动。优先考虑 uv tool install + --print-config。
+# 将 command 改为本机可找到的 uv 命令或 uv 可执行文件绝对路径。
+# 将 --from 后的路径替换为真实 wheel 绝对路径；该文件必须一直保留。
+# Windows TOML 路径可用正斜杠，例如 C:/Users/YourName/Tools/package.whl。
+# macOS/Linux 例如 /home/user/tools/package.whl；TOML 不会展开 ~ 或 $HOME。
+[mcp_servers.image_generation]
+command = "uv"
+args = ["tool", "run", "--python", "3.11", "--from", "/absolute/path/to/gpt_image_generation-0.3.0-py3-none-any.whl", "gpt-image-generation"]
+startup_timeout_sec = 120
+tool_timeout_sec = 360
+
+# 若已有 provider 引用环境变量，将实际变量名加入数组；不在这里填写密钥值。
+# 自定义 CODEX_HOME、CODEX_IMAGE_PROFILE、CODEX_IMAGE_TIMEOUT 也须按需转发。
+# 请求超时超过 300 秒时，tool_timeout_sec 应大于该值并留出本地处理时间。
+env_vars = []
+
+# 建议先在终端执行同样的命令并追加 --check，完成首次依赖准备。
+# 此模式不要把 --print-config 中的缓存 Python 路径当作持久安装路径。
