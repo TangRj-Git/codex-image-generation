@@ -1,272 +1,424 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import io
+import json
 import os
-import tempfile
-import unittest
 from pathlib import Path
+import tempfile
+import threading
+import time
 from types import SimpleNamespace
+import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from PIL import Image
 import httpx2
-from openai import APIStatusError, APITimeoutError, AsyncOpenAI
+from openai import APIStatusError, AsyncOpenAI
+from PIL import Image
 
 from gpt_image_generation.errors import ImageToolError
+from gpt_image_generation import generator
 from gpt_image_generation.generator import generate, validate_options
 
 
-def image_bytes(fmt="png", size=(16, 24), alpha=False):
-    buffer = io.BytesIO()
-    Image.new("RGBA" if alpha else "RGB", size, (40, 80, 120, 0) if alpha else (40, 80, 120)).save(buffer, format=fmt)
-    return buffer.getvalue()
+def image_bytes(fmt="png", alpha=255, size=(16, 24)):
+    output = io.BytesIO()
+    image = Image.new("RGBA", size, (40, 80, 120, alpha))
+    if fmt == "jpeg":
+        image = image.convert("RGB")
+    image.save(output, format=fmt)
+    return output.getvalue()
 
 
-def image_item(fmt="png", **kwargs):
-    return {"type": "image_generation_call", "status": "completed",
-            "result": base64.b64encode(image_bytes(fmt)).decode("ascii"), **kwargs}
+def image_item(identifier="ig_fixture", fmt="png", **kwargs):
+    return {"id": identifier, "type": "image_generation_call", "status": "completed",
+            "result": base64.b64encode(image_bytes(fmt)).decode(), "revised_prompt": "revised prompt", **kwargs}
+
+
+def response(items=None, **kwargs):
+    return {"id": "resp_fixture", "object": "response", "created_at": 0,
+            "status": "completed", "model": "session-model", "output": [image_item()] if items is None else items,
+            "usage": {"input_tokens": 10, "output_tokens": 20, "total_tokens": 30}, **kwargs}
+
+
+def config(**kwargs):
+    return SimpleNamespace(**({"base_url": "https://proxy.example/v1", "api_key": "fixture-selected-key",
+                              "provider": "custom", "headers": {}, "query_params": {},
+                              "model": "session-model", "request_timeout": 30} | kwargs))
+
+
+def client(result=None):
+    instance = MagicMock()
+    instance.__aenter__ = AsyncMock(return_value=instance)
+    instance.__aexit__ = AsyncMock(return_value=False)
+    instance.responses.create = AsyncMock(return_value=response() if result is None else result)
+    return instance
 
 
 class OptionTests(unittest.TestCase):
-    def options(self, **overrides):
-        args = {"image_model": "gpt-image-2.5-flare", "output_format": "png", "size": "auto",
-                "quality": "auto", "background": "auto", "output_compression": None,
-                "action": "auto", "input_fidelity": None}
-        args.update(overrides)
-        return validate_options(**args)
+    def test_minimal_tool_has_no_model_or_unrequested_defaults(self):
+        self.assertEqual(validate_options(output_format="png"), {"type": "image_generation", "output_format": "png"})
 
-    def test_jpeg_transparency_rejected(self):
-        with self.assertRaisesRegex(ImageToolError, "JPEG"):
-            self.options(output_format="jpeg", background="transparent")
-
-    def test_webp_transparency_and_compression(self):
-        result = self.options(output_format="webp", background="transparent", output_compression=75)
-        self.assertEqual(result["output_compression"], 75)
-
-    def test_compression_validation(self):
-        for compression in [-1, 101, 5.5, True]:
-            with self.subTest(value=compression), self.assertRaises(ImageToolError):
-                self.options(output_format="jpeg", output_compression=compression)
-        with self.assertRaises(ImageToolError):
-            self.options(output_compression=80)
-
-    def test_supported_flexible_sizes(self):
-        for size in ["1536x864", "3840x2160", "2160x3840", "2048x2048", "1024×1024", "auto"]:
+    def test_syntax_without_model_family_assumptions(self):
+        for size in ["512x512", "1000x700", "4096x4096", "1024×768", "auto"]:
             with self.subTest(size=size):
-                self.options(size=size)
-
-    def test_invalid_flexible_sizes(self):
-        for size in ["0x1024", "1024", "512x512", "1000x1024", "4096x2048", "3840x3840", "3072x512"]:
+                tool = validate_options(output_format="png", size=size, quality="max", input_fidelity="high")
+                self.assertNotIn("model", tool)
+        for size in ["0x1024", "-1x50", "1024", "1.5x20", "Auto x Auto"]:
             with self.subTest(size=size), self.assertRaises(ImageToolError):
-                self.options(size=size)
+                validate_options(output_format="png", size=size)
 
-    def test_old_model_limits_and_unknown_alias(self):
+    def test_format_constraints(self):
         with self.assertRaises(ImageToolError):
-            self.options(image_model="gpt-image-1.5", size="1536x864")
-        self.options(image_model="custom-image-alias", size="640x480", quality="max")
+            validate_options(output_format="jpeg", background="transparent")
+        with self.assertRaises(ImageToolError):
+            validate_options(output_format="png", output_compression=75)
+        self.assertEqual(validate_options(output_format="webp", output_compression=0)["output_compression"], 0)
 
-    def test_quality_model_capability(self):
-        for model in ["gpt-image-2.5-flare", "gpt-image-2.5-sunburst-2026-09-08"]:
-            self.options(image_model=model, quality="max")
-        for model in ["gpt-image-2", "gpt-image-1.5", "gpt-image-1-mini"]:
-            with self.subTest(model=model), self.assertRaises(ImageToolError):
-                self.options(image_model=model, quality="xhigh")
-
-    def test_input_fidelity_model_capability(self):
-        for model in ["gpt-image-2", "gpt-image-2-2026-04-21", "gpt-image-1-mini"]:
-            with self.subTest(model=model), self.assertRaises(ImageToolError):
-                self.options(image_model=model, input_fidelity="high")
-        self.options(image_model="gpt-image-1-mini", input_fidelity="low")
-        self.options(image_model="gpt-image-2.5-flare", input_fidelity="high")
+    def test_strict_integer_ranges(self):
+        for value in [True, -1, 101, 2.5]:
+            with self.subTest(compression=value), self.assertRaises(ImageToolError):
+                validate_options(output_format="jpeg", output_compression=value)
+        for value in [True, -1, 4, 1.5]:
+            with self.subTest(partials=value), self.assertRaises(ImageToolError):
+                validate_options(output_format="png", partial_images=value)
 
 
-class GeneratorTests(unittest.IsolatedAsyncioTestCase):
+class GenerationTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.project = Path(self.temp.name).resolve()
-        self.config = SimpleNamespace(base_url="https://proxy.example/v1", api_key="secret-test-key",
-                                      provider="custom",
-                                      headers={"X-Example": "header-secret"}, query_params={"version": "1"},
-                                      responses_model="gpt-6-astra", image_model="gpt-image-2.5-flare",
-                                      request_timeout=30)
-        self.client = MagicMock()
-        self.client.__aenter__ = AsyncMock(return_value=self.client)
-        self.client.__aexit__ = AsyncMock(return_value=False)
-        self.client.responses.create = AsyncMock(return_value={
-            "id": "resp_example", "status": "completed", "output_text": "image description",
-            "output": [{"type": "message"}, image_item(revised_prompt="revised")],
-        })
-        self.factory_patch = patch("gpt_image_generation.generator.AsyncOpenAI", return_value=self.client)
-        self.factory = self.factory_patch.start()
-        self.addCleanup(self.factory_patch.stop)
+        self.cwd = Path(self.temp.name).resolve()
+        self.client = client()
+        self.mock = patch.object(generator, "AsyncOpenAI", return_value=self.client)
+        self.factory = self.mock.start()
+        self.addCleanup(self.mock.stop)
 
-    async def run_generate(self, **kwargs):
-        return await generate(self.config, prompt="画一张书桌插画", project_dir=str(self.project), **kwargs)
+    async def call(self, **kwargs):
+        settings = kwargs.pop("settings", config())
+        return await generate(settings, prompt="Draw a desk", cwd=str(self.cwd), **kwargs)
 
-    def written_files(self):
-        return list((self.project / "outputs" / "images").glob("*"))
+    def all_files(self):
+        return [path for path in self.cwd.rglob("*") if path.is_file()]
 
-    async def test_responses_request_and_saved_result(self):
-        result = await self.run_generate(filename="desk.png")
+    async def test_request_and_result_metadata(self):
+        self.client.responses.create.return_value["_request_id"] = "req_fixture"
+        result = await self.call(filename="desk.png", safety_identifier="hashed-user-id")
         request = self.client.responses.create.call_args.kwargs
-        self.assertEqual(request["model"], "gpt-6-astra")
-        self.assertEqual(request["tools"][0]["model"], "gpt-image-2.5-flare")
-        self.assertEqual(request["tool_choice"], "required")
-        self.assertEqual(request["input"], "画一张书桌插画")
+        self.assertEqual(request["model"], "session-model")
+        self.assertEqual(request["tools"], [{"type": "image_generation", "output_format": "png"}])
+        self.assertEqual(request["tool_choice"], {"type": "image_generation"})
+        self.assertEqual(request["safety_identifier"], "hashed-user-id")
+        self.assertNotIn("safety_identifier", request["tools"][0])
+        self.assertEqual(result.status, "success")
+        self.assertEqual(result.response_id, "resp_fixture")
+        self.assertEqual(result.request_id, "req_fixture")
+        self.assertEqual(result.usage["total_tokens"], 30)
+        self.assertEqual(result.images[0].call_id, "ig_fixture")
+        self.assertEqual(result.images[0].path, self.cwd / "desk.png")
         self.assertEqual(self.factory.call_args.kwargs["max_retries"], 0)
-        self.assertEqual(self.factory.call_args.kwargs["default_query"], {"version": "1"})
-        self.assertEqual(result.response_id, "resp_example")
-        self.assertEqual(result.text, "image description")
-        self.assertEqual(result.images[0].path, self.project / "outputs/images/desk.png")
-        self.assertEqual(result.images[0].path.read_bytes(), image_bytes())
-        self.assertEqual(result.images[0].revised_prompt, "revised")
-        self.client.__aexit__.assert_awaited_once()
 
-    async def test_infers_jpeg_from_filename(self):
-        self.client.responses.create.return_value["output"] = [image_item("jpeg")]
-        result = await self.run_generate(filename="photo.jpg", output_compression=80)
-        self.assertEqual(self.client.responses.create.call_args.kwargs["tools"][0]["output_format"], "jpeg")
+    async def test_missing_model_rejected_locally(self):
+        with self.assertRaises(ImageToolError):
+            await self.call(settings=config(model=None))
+        self.factory.assert_not_called()
+        self.assertEqual(self.all_files(), [])
+
+    async def test_format_inference_and_provider_mismatch_preserved(self):
+        self.client.responses.create.return_value = response([image_item(fmt="jpeg")])
+        result = await self.call(filename="photo.jpg", output_compression=75)
         self.assertEqual(result.images[0].mime_type, "image/jpeg")
+        self.assertEqual(self.client.responses.create.call_args.kwargs["tools"][0]["output_format"], "jpeg")
+        self.client.responses.create.return_value = response()
+        result = await self.call(filename="provider-ignored-format.jpg")
+        self.assertEqual(result.images[0].path.suffix, ".png")
+        self.assertTrue(result.warnings)
 
-    async def test_invalid_options_never_call_upstream(self):
-        with self.assertRaises(ImageToolError):
-            await self.run_generate(output_format="jpeg", background="transparent")
-        self.factory.assert_not_called()
+    async def test_completed_results_survive_incomplete_parent_and_failed_sibling(self):
+        self.client.responses.create.return_value = response(
+            [image_item(), image_item("ig_failed", status="failed", result=None)], status="incomplete")
+        result = await self.call(filename="partial.png")
+        self.assertEqual(result.status, "partial_success")
+        self.assertEqual(len(result.images), 1)
+        self.assertEqual(result.response_id, "resp_fixture")
+        self.assertEqual({error["code"] for error in result.errors}, {"response_incomplete", "image_generation_failed"})
+        self.assertTrue(result.images[0].path.exists())
 
-    async def test_existing_file_never_calls_upstream(self):
-        (self.project / "desk.png").write_bytes(b"original")
-        with self.assertRaises(ImageToolError):
-            await self.run_generate(output_dir=".", filename="desk.png")
-        self.factory.assert_not_called()
+    async def test_bad_base64_does_not_discard_good_image(self):
+        self.client.responses.create.return_value = response([image_item("bad", result="%%%"), image_item()])
+        result = await self.call()
+        self.assertEqual(result.status, "partial_success")
+        self.assertEqual(len(result.images), 1)
+        self.assertEqual(result.errors[0]["call_id"], "bad")
 
-    async def test_multiple_items_not_just_first(self):
-        self.client.responses.create.return_value["output"] = [image_item(), {"type": "message"}, image_item()]
-        result = await self.run_generate(filename="desk.png")
-        self.assertEqual([image.path.name for image in result.images], ["desk_1.png", "desk_2.png"])
+    async def test_no_images_is_structured_error(self):
+        self.client.responses.create.return_value = response([])
+        result = await self.call()
+        self.assertEqual(result.status, "error")
+        self.assertEqual(result.errors[0]["code"], "no_images")
+        self.assertEqual(result.response_id, "resp_fixture")
+        self.assertEqual(self.all_files(), [])
 
-    async def test_missing_or_bad_image_results_save_nothing(self):
-        bad_outputs = [[], [{"type": "message"}], [image_item(result="%%%")], [image_item(result="")],
-                       [image_item(result=base64.b64encode(b"not image bytes").decode())],
-                       [image_item(), image_item(status="failed")], [image_item("jpeg")]]
-        for output in bad_outputs:
-            with self.subTest(output_type=len(output)):
-                self.client.responses.create.return_value["output"] = output
-                with self.assertRaises(ImageToolError):
-                    await self.run_generate()
-                self.assertEqual(self.written_files(), [])
+    async def test_remote_file_and_historical_inputs_are_forwarded(self):
+        result = await self.call(input_images=[{"image_url": "https://images.example/picture.png", "detail": "original"},
+                                              {"file_id": "file_example"}], mask={"file_id": "file_mask"},
+                                 previous_response_id="resp_previous", previous_image_ids=["ig_previous"], action="edit")
+        request = self.client.responses.create.call_args.kwargs
+        self.assertEqual(request["input"][0], {"type": "image_generation_call", "id": "ig_previous"})
+        self.assertEqual(request["input"][1]["content"][1]["image_url"], "https://images.example/picture.png")
+        self.assertEqual(request["input"][1]["content"][1]["detail"], "original")
+        self.assertEqual(request["input"][1]["content"][2]["file_id"], "file_example")
+        self.assertEqual(request["tools"][0]["input_image_mask"], {"file_id": "file_mask"})
+        self.assertEqual(result.status, "success")
 
-    async def test_incomplete_response_rejected(self):
-        self.client.responses.create.return_value["status"] = "incomplete"
-        with self.assertRaises(ImageToolError):
-            await self.run_generate()
-        self.assertEqual(self.written_files(), [])
-
-    async def test_reference_and_mask_are_data_urls(self):
-        (self.project / "reference.png").write_bytes(image_bytes())
-        (self.project / "mask.png").write_bytes(image_bytes(alpha=True))
-        await self.run_generate(reference_images=["reference.png"], mask_image="mask.png", action="edit")
+    async def test_local_and_data_mask_validation(self):
+        (self.cwd / "reference.png").write_bytes(image_bytes())
+        mask_url = "data:image/png;base64," + base64.b64encode(image_bytes(alpha=0)).decode()
+        await self.call(input_images=[{"path": "reference.png"}], mask={"image_url": mask_url}, action="edit")
         request = self.client.responses.create.call_args.kwargs
         self.assertTrue(request["input"][0]["content"][1]["image_url"].startswith("data:image/png;base64,"))
-        self.assertTrue(request["tools"][0]["input_image_mask"]["image_url"].startswith("data:image/png;base64,"))
+        self.assertEqual(request["tools"][0]["input_image_mask"]["image_url"], mask_url)
 
-    async def test_invalid_mask_rejected_before_request(self):
-        (self.project / "reference.png").write_bytes(image_bytes())
-        for data in [image_bytes(), image_bytes(size=(32, 32), alpha=True), image_bytes("webp", alpha=True)]:
-            (self.project / "mask.png").write_bytes(data)
-            with self.subTest(size=len(data)), self.assertRaises(ImageToolError):
-                await self.run_generate(reference_images=["reference.png"], mask_image="mask.png")
+    async def test_invalid_sources_never_reach_upstream_and_release_reservation(self):
+        invalid = [{"path": "x.png", "file_id": "file_x"}, {"image_url": "ftp://example/image.png"},
+                   {"file_id": "file_x", "detail": "unsupported"}, {"image_url": "data:image/jpeg;base64," + base64.b64encode(image_bytes()).decode()}]
+        for source in invalid:
+            with self.subTest(source=list(source)), self.assertRaises(ImageToolError):
+                await self.call(input_images=[source], filename="reusable.png")
+        self.factory.assert_not_called()
+        self.assertEqual(self.all_files(), [])
+
+    async def test_local_input_budget(self):
+        data = image_bytes()
+        (self.cwd / "ref.png").write_bytes(data)
+        with patch.object(generator, "MAX_INPUT_TOTAL_BYTES", len(data)), self.assertRaises(ImageToolError):
+            await self.call(input_images=[{"path": "ref.png"}, {"path": "ref.png"}])
         self.factory.assert_not_called()
 
-    async def test_edit_requires_input(self):
-        with self.assertRaises(ImageToolError):
-            await self.run_generate(action="edit")
-        self.factory.assert_not_called()
-
-    async def test_followup_response_id_forwarded(self):
-        await self.run_generate(action="edit", previous_response_id="resp_previous")
-        self.assertEqual(self.client.responses.create.call_args.kwargs["previous_response_id"], "resp_previous")
-
-    async def test_provider_size_and_transparency_mismatch_are_reported(self):
-        result = await self.run_generate(size="1024x1024", background="transparent")
+    async def test_output_budget_retains_first_valid_asset(self):
+        self.client.responses.create.return_value = response([image_item("one"), image_item("two")])
+        with patch.object(generator, "MAX_OUTPUT_IMAGES", 1):
+            result = await self.call()
+        self.assertEqual(result.status, "partial_success")
         self.assertEqual(len(result.images), 1)
-        self.assertEqual(len(result.warnings), 2)
-        self.assertIn("16x24", result.warnings[0])
-        self.assertIn("alpha", result.warnings[1])
 
-    async def test_auth_errors_are_sanitized(self):
-        response = SimpleNamespace(status_code=401, headers={"x-request-id": "secret-test-key"}, request=SimpleNamespace())
-        self.client.responses.create.side_effect = APIStatusError("secret-test-key header-secret", response=response, body={"secret": "secret-test-key"})
-        with self.assertRaises(ImageToolError) as captured:
-            await self.run_generate()
-        self.assertNotIn("secret-test-key", str(captured.exception))
-        self.assertNotIn("header-secret", str(captured.exception))
-        self.assertIn("认证", str(captured.exception))
+    async def test_opaque_rgba_warns_for_transparency(self):
+        result = await self.call(background="transparent")
+        self.assertTrue(any("透明像素" in warning for warning in result.warnings))
+
+    async def test_http_error_is_safe_and_retains_request_id(self):
+        mock_response = SimpleNamespace(status_code=429, headers={"x-request-id": "req_failure"}, request=SimpleNamespace())
+        self.client.responses.create.side_effect = APIStatusError("fixture-selected-key private body", response=mock_response, body={"token": "fixture-selected-key"})
+        result = await self.call()
+        self.assertEqual(result.request_id, "req_failure")
+        self.assertEqual(result.status, "error")
+        self.assertEqual(result.errors[0]["http_status"], 429)
+        self.assertNotIn("fixture-selected-key", repr(result))
         self.client.responses.create.assert_awaited_once()
+        self.assertEqual(self.all_files(), [])
 
-    async def test_timeout_has_no_automatic_retry(self):
-        self.client.responses.create.side_effect = APITimeoutError(SimpleNamespace())
-        with self.assertRaisesRegex(ImageToolError, "重复计费"):
-            await self.run_generate()
-        self.client.responses.create.assert_awaited_once()
+    async def test_worker_does_not_block_loop_and_deadline_prevents_upstream(self):
+        original = generator._prepare_input
+        started = threading.Event()
+        ticks = []
 
-    async def test_rate_limit_has_safe_message(self):
-        response = SimpleNamespace(status_code=429, headers={}, request=SimpleNamespace())
-        self.client.responses.create.side_effect = APIStatusError("private upstream detail", response=response, body={})
-        with self.assertRaisesRegex(ImageToolError, "429") as captured:
-            await self.run_generate()
-        self.assertNotIn("private upstream detail", str(captured.exception))
+        def slow_input(*args):
+            started.set()
+            time.sleep(0.12)
+            return original(*args)
+
+        async def beat():
+            for _ in range(10):
+                ticks.append(time.monotonic())
+                await asyncio.sleep(0.01)
+
+        with patch.object(generator, "_prepare_input", side_effect=slow_input):
+            heartbeat = asyncio.create_task(beat())
+            result = await self.call(settings=config(request_timeout=0.03))
+            await heartbeat
+        self.assertEqual(result.errors[0]["code"], "timeout")
+        self.assertGreaterEqual(len(ticks), 10)
+        self.assertLess(max(b-a for a,b in zip(ticks,ticks[1:])), 0.09)
+        self.factory.assert_not_called()
+        self.assertEqual(self.all_files(), [])
+
+    async def test_cancel_prepare_waits_and_releases_new_reservation(self):
+        original = generator.prepare_save
+        started = threading.Event()
+
+        def slow_prepare(*args):
+            plan = original(*args)
+            started.set()
+            time.sleep(0.08)
+            return plan
+
+        with patch.object(generator, "prepare_save", side_effect=slow_prepare):
+            task = asyncio.create_task(self.call(filename="cancelled.png"))
+            self.assertTrue(await asyncio.to_thread(started.wait, 2))
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+        self.assertEqual(self.all_files(), [])
+        self.factory.assert_not_called()
+
+    async def test_cancel_during_save_finishes_worker_and_preserves_completed_file(self):
+        original = generator.save_images
+        started = threading.Event()
+
+        def slow_save(*args):
+            started.set()
+            time.sleep(0.08)
+            return original(*args)
+
+        with patch.object(generator, "save_images", side_effect=slow_save):
+            task = asyncio.create_task(self.call(filename="completed.png"))
+            self.assertTrue(await asyncio.to_thread(started.wait, 2))
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+        self.assertEqual([path.name for path in self.all_files()], ["completed.png"])
+
+    async def test_concurrent_explicit_name_is_rejected_before_second_request(self):
+        entered, finish = asyncio.Event(), asyncio.Event()
+
+        async def wait_upstream(**kwargs):
+            entered.set()
+            await finish.wait()
+            return response()
+
+        self.client.responses.create.side_effect = wait_upstream
+        first = asyncio.create_task(self.call(filename="same.png"))
+        await asyncio.wait_for(entered.wait(), 2)
+        try:
+            with self.assertRaises(ImageToolError):
+                await self.call(filename="same.png")
+            self.assertEqual(self.client.responses.create.await_count, 1)
+        finally:
+            finish.set()
+        self.assertEqual((await first).status, "success")
 
 
-class SDKHeaderAuthenticationTests(unittest.IsolatedAsyncioTestCase):
-    async def test_real_sdk_uses_header_auth_without_dummy_bearer(self):
-        cases = [
-            ("", {"X-API-Key": "custom-key"}),
-            ("", {"Authorization": "Basic dXNlcjpwYXNz"}),
-            ("selected-key", {}),
-            ("selected-key", {"OpenAI-Organization": "selected-org", "openai-project": "selected-project", "X-Custom": "selected-custom"}),
+class BytesStream(httpx2.AsyncByteStream):
+    def __init__(self, chunks, *, broken=False, wait_after=None):
+        self.chunks, self.broken, self.wait_after = chunks, broken, wait_after
+        self.closed = False
+
+    async def __aiter__(self):
+        for chunk in self.chunks:
+            yield chunk
+            await asyncio.sleep(0)
+        if self.wait_after:
+            await asyncio.sleep(self.wait_after)
+        if self.broken:
+            raise httpx2.ReadError("fixture-selected-key transport body")
+
+    async def aclose(self):
+        self.closed = True
+
+
+def sse(event):
+    return ("event: " + event["type"] + "\ndata: " + json.dumps(event) + "\n\n").encode()
+
+
+class SDKTests(unittest.IsolatedAsyncioTestCase):
+    async def run_sdk(self, handler, *, settings=None, **kwargs):
+        captured = []
+
+        async def wrapped(request):
+            captured.append(request)
+            result = handler(request)
+            return await result if asyncio.iscoroutine(result) else result
+
+        def factory(**options):
+            self.assertNotIn("_enforce_credentials", options)
+            return AsyncOpenAI(**options, http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(wrapped)))
+
+        with tempfile.TemporaryDirectory() as cwd, patch.object(generator, "AsyncOpenAI", side_effect=factory):
+            result = await generate(settings or config(), prompt="Draw an image", cwd=cwd, **kwargs)
+            self.assertTrue(all(image.path.exists() for image in result.images))
+        return result, captured
+
+    async def test_real_sdk_header_auth_and_environment_isolation(self):
+        ambient = {"OPENAI_API_KEY": "unrelated-key", "OPENAI_ADMIN_KEY": "unrelated-admin",
+                   "OPENAI_ORG_ID": "unrelated-org", "OPENAI_PROJECT_ID": "unrelated-project",
+                   "OPENAI_CUSTOM_HEADERS": "Authorization: Bearer unrelated-fixture\nX-Other: unrelated-other"}
+        for key, headers in [("fixture-selected-key", {}), ("", {"X-API-Key": "custom-key"}),
+                             ("", {"Authorization": "Basic dXNlcjpwYXNz"})]:
+            with self.subTest(headers=list(headers)), patch.dict(os.environ, ambient):
+                result, captured = await self.run_sdk(lambda _: httpx2.Response(200, headers={"x-request-id": "req_sdk"}, json=response()),
+                                                       settings=config(api_key=key, headers=headers))
+            request = captured[0]
+            body = json.loads(request.content)
+            self.assertEqual(body["model"], "session-model")
+            self.assertNotIn("model", body["tools"][0])
+            self.assertEqual(result.request_id, "req_sdk")
+            expected = f"Bearer {key}" if key else headers.get("Authorization")
+            self.assertEqual(request.headers.get("Authorization"), expected)
+            if "X-API-Key" in headers:
+                self.assertEqual(request.headers["X-API-Key"], headers["X-API-Key"])
+            for name in ["OpenAI-Organization", "OpenAI-Project", "X-Other"]:
+                self.assertNotIn(name, request.headers)
+
+    def stream_events(self, terminal=True):
+        events = [
+            {"type": "response.created", "sequence_number": 0, "response": response([], status="in_progress")},
+            {"type": "response.image_generation_call.partial_image", "sequence_number": 1, "item_id": "ig_fixture", "output_index": 0,
+             "partial_image_index": 0, "partial_image_b64": base64.b64encode(image_bytes()).decode()},
+            {"type": "response.output_item.done", "sequence_number": 2, "output_index": 0, "item": image_item()},
         ]
-        for api_key, headers in cases:
-            with self.subTest(api_key=bool(api_key), headers=list(headers)), tempfile.TemporaryDirectory() as project:
-                captured = []
+        if terminal:
+            events.append({"type": "response.completed", "sequence_number": 3, "response": response()})
+        return [sse(event) for event in events]
 
-                def handler(request):
-                    captured.append(request)
-                    return httpx2.Response(200, json={
-                        "id": "resp_mock", "object": "response", "status": "completed",
-                        "created_at": 0, "model": "gpt-6-astra",
-                        "output": [image_item(id="ig_mock")],
-                    })
+    async def test_real_sse_partial_progress_terminal_deduplication(self):
+        stream = BytesStream(self.stream_events())
+        progress = []
 
-                def client_factory(**kwargs):
-                    self.assertNotIn("_enforce_credentials", kwargs)
-                    return AsyncOpenAI(**kwargs, http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(handler)))
+        async def notify(event):
+            progress.append(event)
 
-                config = SimpleNamespace(base_url="https://proxy.example/v1", api_key=api_key, provider="custom",
-                                         headers=headers, query_params={}, responses_model="gpt-6-astra",
-                                         image_model="gpt-image-2.5-flare", request_timeout=30)
-                ambient = {"OPENAI_API_KEY": "unrelated-key", "OPENAI_ADMIN_KEY": "unrelated-admin",
-                           "OPENAI_ORG_ID": "unrelated-org", "OPENAI_PROJECT_ID": "unrelated-project",
-                           "OPENAI_CUSTOM_HEADERS": "Authorization: Bearer unrelated-fixture\nX-Custom: unrelated-custom\nX-Other: unrelated-other"}
-                with patch.dict(os.environ, ambient), patch("gpt_image_generation.generator.AsyncOpenAI", side_effect=client_factory):
-                    result = await generate(config, prompt="Draw a desk", project_dir=project)
-                self.assertEqual(len(result.images), 1)
-                self.assertEqual(len(captured), 1)
-                self.assertEqual(str(captured[0].url), "https://proxy.example/v1/responses")
-                if api_key:
-                    self.assertEqual(captured[0].headers["Authorization"], f"Bearer {api_key}")
-                elif "Authorization" in headers:
-                    self.assertEqual(captured[0].headers["Authorization"], headers["Authorization"])
-                else:
-                    self.assertNotIn("Authorization", captured[0].headers)
-                    self.assertEqual(captured[0].headers["X-API-Key"], "custom-key")
-                self.assertNotIn("X-Other", captured[0].headers)
-                for name in ["OpenAI-Organization", "openai-project", "X-Custom"]:
-                    if name in headers:
-                        self.assertEqual(captured[0].headers[name], headers[name])
-                    else:
-                        self.assertNotIn(name, captured[0].headers)
+        result, captured = await self.run_sdk(lambda _: httpx2.Response(200, headers={"content-type": "text/event-stream", "x-request-id": "req_stream"}, stream=stream),
+                                               partial_images=2, on_progress=notify)
+        self.assertEqual(result.status, "success")
+        self.assertEqual(len(result.images), 1)
+        self.assertEqual(len(result.partials), 1)
+        self.assertEqual(result.partials[0].metadata["partial_index"], 0)
+        self.assertEqual(result.request_id, "req_stream")
+        self.assertTrue(stream.closed)
+        self.assertTrue(any(event["stage"] == "partial_image" for event in progress))
+        body = json.loads(captured[0].content)
+        self.assertTrue(body["stream"])
+        self.assertEqual(body["tools"][0]["partial_images"], 2)
+
+    async def test_stream_disconnect_retains_completed_asset(self):
+        stream = BytesStream(self.stream_events(terminal=False), broken=True)
+        result, requests = await self.run_sdk(lambda _: httpx2.Response(200, headers={"content-type": "text/event-stream"}, stream=stream), partial_images=1)
+        self.assertEqual(result.status, "partial_success")
+        self.assertEqual(len(result.images), 1)
+        self.assertEqual(result.response_id, "resp_fixture")
+        self.assertTrue(any(error["code"] == "stream_interrupted" for error in result.errors))
+        self.assertEqual(len(requests), 1)
+        self.assertNotIn("fixture-selected-key", repr(result.errors))
+        self.assertTrue(stream.closed)
+
+    async def test_stream_timeout_retains_completed_asset(self):
+        stream = BytesStream(self.stream_events(terminal=False), wait_after=1)
+        result, requests = await self.run_sdk(lambda _: httpx2.Response(200, headers={"content-type": "text/event-stream"}, stream=stream),
+                                              settings=config(request_timeout=0.12), partial_images=1)
+        self.assertEqual(result.status, "partial_success")
+        self.assertEqual(len(result.images), 1)
+        self.assertTrue(any(error["code"] == "timeout" for error in result.errors))
+        self.assertTrue(stream.closed)
+        self.assertEqual(len(requests), 1)
+
+    async def test_partial_budget_is_bounded_without_losing_final(self):
+        with patch.object(generator, "MAX_PARTIAL_TOTAL_BYTES", 8):
+            stream = BytesStream(self.stream_events())
+            result, _ = await self.run_sdk(lambda _: httpx2.Response(200, headers={"content-type": "text/event-stream"}, stream=stream), partial_images=1)
+        self.assertEqual(result.partials, [])
+        self.assertEqual(len(result.images), 1)
+        self.assertTrue(result.warnings)
 
 
 if __name__ == "__main__":

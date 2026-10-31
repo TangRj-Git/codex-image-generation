@@ -1,72 +1,83 @@
-"""MCP tools: generate an image, or inspect the local configuration."""
+"""One image tool using the current task context and existing relay settings."""
 
 from __future__ import annotations
 
 import asyncio
 import io
-from pathlib import Path
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, Self
 
-from fastmcp import FastMCP
-from fastmcp.exceptions import ToolError
+from fastmcp import Context, FastMCP
 from fastmcp.tools import ToolResult
 from fastmcp.utilities.types import Image
 from PIL import Image as PILImage
-from pydantic import Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from . import __version__
 from .config import resolve_config
 from .errors import ImageToolError
 from .generator import generate
 
-INSTRUCTIONS = """Generate or edit raster images using the user's configured Responses provider.
-When a user asks for an image, call generate_image. Supply project_dir as the absolute
-path of the user's CURRENT task project, not the MCP server's installation directory.
-Do not guess a project directory if the task does not identify one. With no user-specified
-destination, omit output_dir and filename to save under <project_dir>/outputs/images.
-Split a requested file path into output_dir and filename. Relative paths are relative
-to project_dir; an explicitly requested absolute output_dir is supported.
-Infer PNG/JPEG/WebP from the requested filename or format; use PNG/WebP for transparency.
-Preserve the user's requested format, dimensions, quality and edit instructions.
-Pass local reference_images for edits, and mask_image only when the user supplies a mask.
-The provider URL and credentials are resolved internally; never request them as tool arguments.
-Only pass responses_model when the user or reliable session context specifies it; do not guess
-the current model's name. The server otherwise follows its configured model priority.
-Return the generated image and its absolute saved path to the user. Previews can be downscaled;
-saved files are the full original images. Generation may incur provider charges. After a timeout,
-do not automatically repeat the request: the provider may already have generated the image.
-get_image_generation_status checks local configuration only, without contacting the provider.
+INSTRUCTIONS = """Generate or edit raster images when the user requests them.
+Reuse the existing Codex relay configuration; never ask for another URL, API key or image model.
+Supply cwd as the absolute working directory of the CURRENT task, not the MCP installation.
+Without a requested destination, omit output_dir and filename to save directly under cwd.
+Split a requested file path into output_dir and filename.
+Pass current_model only when its exact API ID is supplied by reliable session/runtime context.
+Never guess your model identity. Otherwise omit it: the server may use the configured model and
+reports model_source=config. This does not prove that it matches a temporary UI selection.
+Keep the selected provider/profile context consistent with the session.
+Use filename/output_format for PNG, JPEG or WebP. Transparency requires PNG/WebP.
+Forward image options requested by the user; upstream decides model-specific capabilities.
+Use input_images for local paths, URLs/data URLs or provider file IDs, and mask for editing.
+previous_response_id and previous_image_ids must belong to the same provider that created them.
+Return saved original paths, previews, warnings and response/image IDs needed for later edits.
+Do not automatically repeat a failed or timed-out generation: it may already have incurred charges.
+Previews are not originals. partial_images enables upstream streaming and progress, but real-time
+image display depends on the host. Intermediate previews are drafts, not saved final files.
 """
 
 mcp = FastMCP(
-    "codex-image-generation",
-    version=__version__,
-    instructions=INSTRUCTIONS,
-    mask_error_details=True,
+    "codex-image-generation", version=__version__, instructions=INSTRUCTIONS,
+    mask_error_details=True, strict_input_validation=True,
 )
 
 
-def configuration_status(
-    responses_model: str | None = None, image_model: str | None = None
-) -> dict[str, Any]:
-    """Inspect local settings without a model request or secret disclosure."""
+class ImageSource(BaseModel):
+    """Exactly one local or upstream image source."""
+
+    model_config = ConfigDict(extra="forbid", strict=True, hide_input_in_errors=True)
+    path: str | None = Field(default=None, min_length=1, description="Local path, absolute or relative to cwd.")
+    image_url: str | None = Field(default=None, min_length=1, description="HTTP(S) or data URL; masks should use data URLs or file IDs.")
+    file_id: str | None = Field(default=None, min_length=1, description="File ID from the configured provider.")
+
+    @model_validator(mode="after")
+    def exactly_one_source(self) -> Self:
+        if sum(value is not None for value in (self.path, self.image_url, self.file_id)) != 1:
+            raise ValueError("Provide exactly one of path, image_url or file_id.")
+        return self
+
+
+class ImageInput(ImageSource):
+    detail: Literal["auto", "low", "high", "original"] | None = None
+
+
+def configuration_status() -> dict[str, Any]:
+    """CLI-only inspection; it cannot discover the active session model."""
     try:
-        settings = resolve_config(responses_model, image_model)
+        settings = resolve_config(require_model=False)
     except ImageToolError as exc:
         return {"configured": False, "connection_verified": False, "error": str(exc)}
     return {
-        **settings.public_status(),
-        "configured": True,
-        "connection_verified": False,
-        "server_version": __version__,
-        "default_output_directory": "<project_dir>/outputs/images",
-        "formats": ["png", "jpeg", "webp"],
+        **settings.public_status(), "configured": True,
+        "model_available_in_config": settings.model is not None,
+        "connection_verified": False, "server_version": __version__,
+        "default_output_directory": "<cwd>", "formats": ["png", "jpeg", "webp"],
         "session_model_auto_detection": False,
     }
 
 
 def _preview(data: bytes) -> tuple[bytes, str]:
-    """Bound inline image payloads without changing the saved original."""
+    """Bound inline previews without changing saved originals."""
     with PILImage.open(io.BytesIO(data)) as source:
         alpha = "A" in source.getbands() or "transparency" in source.info
         preview = source.convert("RGBA" if alpha else "RGB")
@@ -87,110 +98,143 @@ def _preview(data: bytes) -> tuple[bytes, str]:
         )
 
 
-@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": False})
-def get_image_generation_status() -> dict[str, Any]:
-    """Check the configured provider and models locally. No API call or image charge.
+def _error_result(code: str, message: str) -> ToolResult:
+    return ToolResult(
+        content=[message], is_error=True,
+        structured_content={
+            "status": "error", "images": [], "response_id": None,
+            "warnings": [], "errors": [{"code": code, "message": message}],
+        },
+    )
 
-    Returns credential source names, never credential values. A configured provider
-    has not necessarily been tested for image generation. Temporary model switches
-    in the Codex UI are not automatically visible to this server.
-    """
-    return configuration_status()
 
-
-@mcp.tool(
-    annotations={
-        "readOnlyHint": False,
-        "destructiveHint": False,
-        "idempotentHint": False,
-        "openWorldHint": True,
-    }
-)
+@mcp.tool(annotations={
+    "readOnlyHint": False, "destructiveHint": False,
+    "idempotentHint": False, "openWorldHint": True,
+})
 async def generate_image(
-    prompt: Annotated[str, Field(description="What to draw or edit; include subject, style and composition.", min_length=1)],
-    project_dir: Annotated[str, Field(description="Absolute path of the user's current project, supplied by Codex from task context.")],
-    output_dir: Annotated[str | None, Field(description="Destination directory; relative to project_dir, or an explicitly requested absolute path. Default: outputs/images.")] = None,
-    filename: Annotated[str | None, Field(description="Optional filename only, such as hero.webp. No directories. Existing files are never overwritten.")] = None,
-    output_format: Annotated[Literal["png", "jpeg", "jpg", "webp"] | None, Field(description="Infer from filename when omitted; otherwise PNG by default. SVG/GIF output is not supported.")] = None,
-    size: Annotated[str, Field(description="auto or WIDTHxHEIGHT, e.g. 1536x1024. GPT Image 2/2.5: multiples of 16, edges <=3840, ratio <=3:1, 655360–8294400 pixels.")] = "auto",
-    quality: Annotated[Literal["auto", "low", "medium", "high", "xhigh", "max"], Field(description="Rendering quality. xhigh/max require GPT Image 2.5 flare or sunburst.")] = "auto",
-    background: Annotated[Literal["auto", "opaque", "transparent"], Field(description="Transparent backgrounds require PNG or WebP.")] = "auto",
-    output_compression: Annotated[int | None, Field(description="JPEG/WebP compression parameter, 0–100. Omit for PNG.", ge=0, le=100)] = None,
-    action: Annotated[Literal["auto", "generate", "edit"], Field(description="Let the model choose, force a new image, or edit a reference/previous response.")] = "auto",
-    reference_images: Annotated[list[str] | None, Field(description="Local PNG/JPEG/WebP reference paths, absolute or relative to project_dir. Uploaded only for this request.")] = None,
-    mask_image: Annotated[str | None, Field(description="Local mask for the first reference image. Must match its format and dimensions and contain an alpha channel.")] = None,
-    input_fidelity: Annotated[Literal["low", "high"] | None, Field(description="Optional preservation fidelity for supported models. Omit for gpt-image-2; gpt-image-1-mini supports low only.")] = None,
-    previous_response_id: Annotated[str | None, Field(description="Optional previous response ID for multi-turn editing when the provider retains Responses state.")] = None,
-    responses_model: Annotated[str | None, Field(description="Optional known dialogue model override, for example gpt-6-astra. Omit to follow configuration; do not guess the session model.")] = None,
-    image_model: Annotated[str | None, Field(description="Optional image model override. Default: gpt-image-2.5-flare.")] = None,
-    include_preview: Annotated[bool, Field(description="Return bounded inline previews as well as original saved paths.")] = True,
+    prompt: Annotated[str, Field(min_length=1, description="Describe what to draw or edit and important visual requirements.")],
+    cwd: Annotated[str, Field(min_length=1, description="Absolute CURRENT task working directory, supplied by Codex from context.")],
+    ctx: Context,
+    current_model: Annotated[str | None, Field(description="Exact dialogue-model API ID only when reliably known from the session. Otherwise omit; config fallback is explicit.")] = None,
+    output_dir: Annotated[str | None, Field(description="Directory relative to cwd or an explicitly requested absolute directory. Default: cwd itself.")] = None,
+    filename: Annotated[str | None, Field(description="Filename only, e.g. cover.webp. Infer format from extension; default is a unique name. Never overwrite existing files.")] = None,
+    output_format: Annotated[Literal["png", "jpeg", "jpg", "webp"] | None, Field(description="Infer from filename if omitted, otherwise default PNG. No SVG or animated output.")] = None,
+    size: Annotated[str | None, Field(description="auto or WIDTHxHEIGHT. Model-specific limits are decided by upstream.")] = None,
+    quality: Annotated[Literal["auto", "low", "medium", "high", "xhigh", "max"] | None, Field(description="Optional quality; available levels depend on the upstream image model.")] = None,
+    background: Annotated[Literal["auto", "opaque", "transparent"] | None, Field(description="Transparent backgrounds require PNG or WebP.")] = None,
+    output_compression: Annotated[int | None, Field(strict=True, ge=0, le=100, description="JPEG/WebP only: strictly integer 0–100.")] = None,
+    action: Annotated[Literal["auto", "generate", "edit"] | None, Field(description="Choose automatically, generate, or edit supplied/previous images.")] = None,
+    input_images: Annotated[list[ImageInput] | None, Field(description="Reference images, each with exactly one path, image_url or file_id.")] = None,
+    mask: Annotated[ImageSource | None, Field(description="Mask for the first image; local/data masks need alpha and must match comparable local input dimensions/format.")] = None,
+    input_fidelity: Annotated[Literal["low", "high"] | None, Field(description="Optional fidelity only if supported upstream; omit by default.")] = None,
+    previous_response_id: Annotated[str | None, Field(description="Prior response ID from the same provider; requires retained upstream state.")] = None,
+    previous_image_ids: Annotated[list[str] | None, Field(description="Prior image_generation_call IDs from the same provider.")] = None,
+    moderation: Annotated[Literal["auto", "low"] | None, Field(description="Optional official moderation setting; upstream policy still applies.")] = None,
+    partial_images: Annotated[int, Field(strict=True, ge=0, le=3, description="0: final-only default. 1–3: streaming drafts and progress; host live display varies.")] = 0,
+    safety_identifier: Annotated[str | None, Field(max_length=128, description="Optional privacy-preserving end-user ID for multi-user deployments.")] = None,
+    include_preview: Annotated[bool, Field(strict=True, description="Return bounded inline previews and original file paths.")] = True,
 ) -> ToolResult:
-    """Generate or edit images via the configured provider's Responses image_generation tool.
+    """Generate/edit images and save originals in the current directory or requested folder.
 
-    Saves full images in the current project (outputs/images by default) or the user's
-    requested directory, and returns image previews plus absolute paths and metadata.
-    URL and API key are reused from Codex configuration. Supports PNG, JPEG, WebP,
-    sizes, quality, transparent backgrounds, local reference images and alpha masks.
-    Provider requests can incur charges; do not automatically retry after a timeout.
+    Reuse Codex relay URL and credentials, without a separate image-model setting.
+    Supports PNG/JPEG/WebP, visual options, reference images and masks. Returns previews,
+    absolute paths and edit IDs; successful images survive partial failures.
     """
     try:
-        settings = resolve_config(responses_model, image_model)
+        settings = resolve_config(current_model=current_model)
+    except ImageToolError as exc:
+        return _error_result("configuration_error", str(exc))
+    progress_count = 0
+
+    async def progress(event: dict[str, Any]) -> None:
+        nonlocal progress_count
+        progress_count += 1
+        messages = {
+            "partial_image": "收到中间预览，正在继续生成最终图片",
+            "completed": "上游生成完成，正在保存图片",
+            "created": "图像请求已接收",
+        }
+        try:
+            await ctx.report_progress(
+                progress_count, message=messages.get(event.get("stage"), "正在生成图片")
+            )
+        except Exception:
+            pass  # Unsupported host progress must not fail a paid request.
+
+    try:
         result = await generate(
-            settings,
-            prompt=prompt,
-            project_dir=project_dir,
-            output_dir=output_dir,
-            filename=filename,
-            output_format=output_format,
-            size=size,
-            quality=quality,
-            background=background,
-            output_compression=output_compression,
-            action=action,
-            reference_images=reference_images,
-            mask_image=mask_image,
-            input_fidelity=input_fidelity,
-            previous_response_id=previous_response_id,
+            settings, prompt=prompt, cwd=cwd, output_dir=output_dir,
+            filename=filename, output_format=output_format, size=size, quality=quality,
+            background=background, output_compression=output_compression, action=action,
+            input_images=[item.model_dump(exclude_none=True) for item in input_images] if input_images is not None else None,
+            mask=mask.model_dump(exclude_none=True) if mask is not None else None,
+            input_fidelity=input_fidelity, previous_response_id=previous_response_id,
+            previous_image_ids=previous_image_ids, moderation=moderation,
+            partial_images=partial_images, safety_identifier=safety_identifier,
+            on_progress=progress,
         )
     except ImageToolError as exc:
-        raise ToolError(str(exc)) from None
+        return _error_result("invalid_request", str(exc))
     except Exception:
-        # In particular, never serialize a raw SDK exception, request or config object.
-        raise ToolError("Image generation failed unexpectedly; inspect the local configuration and try again only after checking the provider.") from None
+        return _error_result("internal_error", "生成请求处理失败。请检查本地配置与输出目录，不要自动重复付费生成。")
 
     metadata: dict[str, Any] = {
-        "images": [],
-        "text": result.text,
-        "response_id": result.response_id,
-        "responses_model": settings.responses_model,
-        "image_model": settings.image_model,
-        "model_source": settings.model_source,
-        "warnings": list(result.warnings),
+        "status": result.status, "images": [], "partials": [], "text": result.text,
+        "response_id": result.response_id, "request_id": result.request_id,
+        "model": settings.model, "model_source": settings.model_source,
+        "reported_model": getattr(result, "model", None), "usage": result.usage,
+        "warnings": list(result.warnings), "errors": list(result.errors),
+        "session_model_auto_detection": False,
     }
     content: list[Any] = []
-    for index, generated in enumerate(result.images):
-        path = str(Path(generated.path).resolve())
-        entry: dict[str, Any] = {
-            "path": path,
-            "mime_type": generated.mime_type,
-            "width": generated.width,
-            "height": generated.height,
-            "bytes": len(generated.data),
-            "revised_prompt": generated.revised_prompt,
-            "preview_included": False,
+    preview_count = 0
+
+    async def add_preview(data: bytes) -> bool:
+        nonlocal preview_count
+        if not include_preview or preview_count >= 4:
+            return False
+        try:
+            preview_data, preview_format = await asyncio.to_thread(_preview, data)
+            content.append(Image(data=preview_data, format=preview_format))
+            preview_count += 1
+            return True
+        except Exception:
+            metadata["warnings"].append("有一张预览无法显示；已保存的原图不受影响。")
+            return False
+
+    for image in result.images:
+        path = str(image.path)
+        content.append(f"图片已保存：{path} ({image.width}x{image.height}, {image.mime_type})")
+        if image.call_id:
+            content.append(f"Image call ID: {image.call_id}")
+        metadata["images"].append({
+            "path": path, "mime_type": image.mime_type, "width": image.width, "height": image.height,
+            "bytes": len(image.data), "call_id": image.call_id, "revised_prompt": image.revised_prompt,
+            "actual": image.metadata, "preview_included": await add_preview(image.data),
+            "preview_is_original": False,
+        })
+    for draft in result.partials:
+        entry = {
+            "call_id": draft.call_id, "width": draft.info.width, "height": draft.info.height,
+            "mime_type": draft.info.mime_type, "metadata": draft.metadata,
+            "kind": "intermediate_preview", "preview_included": False,
         }
-        content.append(f"Image saved: {path} ({generated.width}x{generated.height}, {generated.mime_type})")
-        if include_preview and index < 4:
-            try:
-                preview_data, preview_format = await asyncio.to_thread(_preview, generated.data)
-                content.append(Image(data=preview_data, format=preview_format))
-                entry["preview_included"] = True
-                entry["preview_is_original"] = False
-            except Exception:
-                metadata["warnings"].append(f"Preview unavailable for saved image {index + 1}; use its absolute path.")
-        metadata["images"].append(entry)
-    if include_preview and len(result.images) > 4:
-        metadata["warnings"].append("Only the first four images have inline previews; all originals were saved.")
+        if include_preview and preview_count < 4:
+            content.append("以下是生成过程中的中间预览，不是最终保存的原图。")
+            entry["preview_included"] = await add_preview(draft.data)
+        metadata["partials"].append(entry)
+    if result.response_id:
+        content.append(f"Response ID: {result.response_id}")
+    if result.request_id:
+        content.append(f"Request ID: {result.request_id}")
+    content.append(f"Model: {settings.model} (source: {settings.model_source})")
+    if metadata["reported_model"] and metadata["reported_model"] != settings.model:
+        content.append(f"Upstream reported model: {metadata['reported_model']}")
+    if settings.model_source == "config":
+        metadata["warnings"].append("模型来自 Codex 配置文件，未验证其是否等于界面临时选择的当前会话模型。")
     if result.text:
         content.append(result.text)
-    return ToolResult(content=content, structured_content=metadata)
+    content.extend(f"提示：{warning}" for warning in metadata["warnings"])
+    content.extend(f"错误 [{error.get('code', 'unknown')}]：{error.get('message', '生成失败')}" for error in result.errors)
+    return ToolResult(content=content, structured_content=metadata, is_error=result.status == "error")

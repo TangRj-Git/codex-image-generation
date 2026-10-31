@@ -441,13 +441,12 @@ server = [
 
 [[package]]
 name = "gpt-image-generation"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "fastmcp" },
     { name = "openai" },
     { name = "pillow" },
-    { name = "python-dotenv" },
 ]
 
 [package.metadata]
@@ -455,7 +454,6 @@ requires-dist = [
     { name = "fastmcp", specifier = ">=4.1.4,<5" },
     { name = "openai", specifier = ">=3.42.0,<4" },
     { name = "pillow", specifier = ">=11.3,<14" },
-    { name = "python-dotenv", specifier = ">=1.2.4" },
 ]
 
 [[package]]

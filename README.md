@@ -1,151 +1,164 @@
 # Codex Image Generation MCP
 
-使用 FastMCP 提供本地 `stdio` 图像工具，复用 Codex 的中转站地址和凭据，内部调用 OpenAI Responses API 的 `image_generation` 工具。
+为中转站用户提供一个本地 FastMCP 图像工具：复用已有 Codex 的 URL 和凭据，使用本次调用提供的对话模型或 Codex 配置中的模型，通过 Responses 的 image_generation 工具生成/编辑图片。
 
-用户可以直接说：
+用户日常只需要说：
 
-- “生成一张安静的书桌插画。” → 当前项目的 `outputs/images/`，自动命名 PNG。
-- “生成一个透明背景 Logo，保存到 public/images/logo.webp。” → 指定目录与 WebP 格式。
-- “把 assets/room.png 中的沙发改成蓝色，保存为 room-blue.png。” → 使用参考图编辑。
+- “生成一张安静的书桌插画。” → 当前任务目录下的唯一 PNG 文件。
+- “生成透明背景的 Logo，保存为 assets/logo.webp。” → 指定目录和 WebP 格式。
+- “把这张参考图中的沙发改成蓝色。” → 提供参考图并编辑。
 
-Codex 应在调用工具时传入当前任务的**绝对项目路径**。MCP 不使用自己的启动目录猜测当前项目，也不能自动获知 Codex 界面临时切换的模型。
+不另外配置 URL、API Key 或专用图像模型；请求不会包含工具内的 model 字段。
 
 ## 安装与接入
 
-要求 Python 3.11+ 和 uv。在本项目目录执行：
+要求 Python 3.11+ 和 uv。在项目目录运行：
 
-```powershell
+~~~powershell
 uv sync --frozen
-uv run --frozen gpt-image-generation --check --responses-model gpt-6-astra
-uv run --frozen gpt-image-generation --print-config --responses-model gpt-6-astra
-```
+uv run --frozen gpt-image-generation --check
+uv run --frozen gpt-image-generation --print-config
+~~~
 
-`--check` 只读取本地配置，不请求上游、不产生生成费用。`configured=true` 不等于中转站的出图能力已验证。
+将最后一条命令输出的配置加入 Codex 用户配置，再重新加载 MCP / 开启新会话。
 
-将 `--print-config` 输出加入用户级 `$CODEX_HOME/config.toml`（默认 `~/.codex/config.toml`）。配置可解析时，它会自动包含所需的环境变量名（不包含值），并按请求超时设置更长的 MCP 超时。也可以使用下面的源码开发配置，替换为实际项目绝对路径：
+生成的配置使用 Python 和 Codex 配置目录的绝对路径，不依赖启动工作目录；自动列出 provider 所需的环境变量名，包括暂时尚未设置的变量，不复制变量值或密钥。MCP 超时会比上游请求超时更长。
 
-```toml
+源码开发也可使用：
+
+~~~toml
 [mcp_servers.image_generation]
 command = "uv"
-args = ["--directory", "E:/OpenProject/gpt-image-generation", "run", "--frozen", "gpt-image-generation", "--responses-model", "gpt-6-astra"]
+args = ["--directory", "E:/OpenProject/gpt-image-generation", "run", "--frozen", "gpt-image-generation"]
 startup_timeout_sec = 60
 tool_timeout_sec = 360
-env_vars = ["CODEX_HOME"]
-```
+~~~
 
-通过 CLI 注册的等价方式：
+将目录替换为本机实际路径。provider 使用环境变量认证时，优先采用 --print-config 自动生成的 env_vars 白名单。服务正常启动为 stdio，stdout 只用于 MCP 协议。
 
-```powershell
-codex mcp add image_generation -- uv --directory E:/OpenProject/gpt-image-generation run --frozen gpt-image-generation --responses-model gpt-6-astra
-```
+--check 不请求上游、不生成图片、不产生生成费用；configured=true 只表示本地连接配置可解析，不表示中转站的工具权限或实际出图已验证。
 
-注册后补充 `tool_timeout_sec = 360`，并重新加载 MCP / 启动新会话。如果 provider 使用 `env_key = "MY_PROVIDER_API_KEY"`，请将 **变量名** 加入 `env_vars`，例如 `["CODEX_HOME", "MY_PROVIDER_API_KEY"]`，让子进程继承已有环境变量；不需要复制密钥值。如果桌面应用找不到 `uv`，使用其绝对路径，或使用 `--print-config` 输出的 Python 绝对路径配置。
+## 模型、连接与任务目录
 
-本仓库不会自动改写你的 Codex 配置。普通启动模式为 stdio 服务，stdout 仅用于协议，不会打印提示语或生成结果。
+模型来源优先级：
 
-## 两个工具
+1. Codex 可靠获知当前会话模型时，在调用参数 current_model 中传入精确 API ID，例如 gpt-6-astra，结果标为 model_source=caller。
+2. 没有传入时使用当前选定 Codex 配置中的 model，结果标为 model_source=config。
+3. 两处都缺失时，在请求前报错。没有硬编码模型兜底。
 
-### `generate_image`
+普通 MCP 不保证提供会话模型元数据。caller 只说明调用方提供了模型，不代表服务验证了会话身份；配置模型也可能不同于界面的临时选择。Codex 不应猜测自己的型号。准确同步会话临时切换需要宿主实际传入对应上下文。
 
-| 参数 | 默认值 / 作用 |
+cwd 必须由 Codex 传入当前任务的绝对工作目录，不能用 MCP 安装目录代替。默认直接保存到 cwd，不自动增加 outputs/images 子目录。用户指定的相对 output_dir 也以 cwd 为基准。
+
+连接仅来自已有用户级 Codex 配置：
+
+- 自定义 provider 使用其 base_url、env_key、experimental_bearer_token、http_headers、env_http_headers、query_params。
+- 内置 openai provider 使用顶层 openai_base_url；没有明确 URL 时不会静默改用其他地址。
+- 当前 provider 要求 OpenAI API Key 认证时，可以复用对应环境变量或文件存储的 API Key。
+- 支持新版 profile 文件及旧版内嵌 profile。--profile 只定位已有配置，不能创建另一套模型/密钥设置。
+- 不读取项目 .env，不扫描其他 provider 找 Key，不实现 ChatGPT OAuth、钥匙串登录或外部 token 命令。
+- 不同用途的显式请求头可共存；同一 Authorization 来源出现不一致的值时拒绝。
+- URL query 与路径分开传输；重复 query 键会明确报错，避免静默丢值。
+
+--codex-home / CODEX_HOME 用于定位配置；--profile / CODEX_IMAGE_PROFILE 用于选择已有 profile。CODEX_IMAGE_TIMEOUT 是可选运行超时，默认 300 秒，范围大于 0 且不超过 3600 秒。它不是模型或连接设置。
+
+## 唯一公开工具：generate_image
+
+| 参数 | 作用 |
 | --- | --- |
-| `prompt` | 必填，图片描述或编辑指令 |
-| `project_dir` | 必填，由 Codex 根据当前任务传入项目绝对路径 |
-| `output_dir` | 默认 `outputs/images`；相对路径按项目解析，也支持用户指定的绝对目录 |
-| `filename` | 可选，仅文件名；省略时自动生成唯一名称，多图附加序号 |
-| `output_format` | 省略时按文件扩展名推断，再默认 PNG；`png` / `jpeg` / `jpg` / `webp` |
-| `size` | `auto` 或 `WIDTHxHEIGHT`，例如 `1536x1024` |
-| `quality` | `auto` / `low` / `medium` / `high`；2.5 flare/sunburst 另支持 `xhigh` / `max` |
-| `background` | `auto` / `opaque` / `transparent` |
-| `output_compression` | JPEG/WebP 可选整数 0–100；PNG 不接受 |
-| `action` | `auto` / `generate` / `edit` |
-| `reference_images` | 可选本地 PNG/JPEG/WebP 路径列表，按项目解析相对路径 |
-| `mask_image` | 可选本地蒙版，作用于第一张参考图 |
-| `input_fidelity` | 可选 `low` / `high`，只用于支持该参数的图像模型 |
-| `previous_response_id` | 可选上次返回的响应 ID；依赖中转站保留 Responses 状态 |
-| `responses_model` | 本次调用的对话模型覆盖值，例如 `gpt-6-astra` |
-| `image_model` | 本次调用的专用图像模型覆盖值，默认 `gpt-image-2.5-flare` |
-| `include_preview` | 默认 `true`，返回最多四张有限尺寸的预览及全部原图路径 |
+| prompt | 必填，图片描述或编辑要求 |
+| cwd | 必填，Codex 当前任务目录的绝对路径 |
+| current_model | 可选，仅在可靠获知当前会话模型时自动传入 |
+| output_dir | 默认 cwd；支持项目内相对目录或用户指定的绝对目录 |
+| filename | 可选，仅文件名；默认唯一名，已有文件不覆盖 |
+| output_format | png / jpeg / jpg / webp；省略时先按文件名推断，再默认 PNG |
+| size | 可选 auto 或 WIDTHxHEIGHT；具体能力由上游判断 |
+| quality | 可选 auto / low / medium / high / xhigh / max |
+| background | 可选 auto / opaque / transparent |
+| output_compression | JPEG/WebP 可选严格整数 0–100，PNG 不接受 |
+| action | 可选 auto / generate / edit |
+| input_images | 可选参考图列表，每项恰有 path、image_url、file_id 之一 |
+| mask | 可选蒙版，同样提供 path、image_url 或 file_id |
+| input_fidelity | 可选 low / high；仅适用于支持该参数的上游，默认不发送 |
+| previous_response_id | 同一 provider 保留的上次响应 ID |
+| previous_image_ids | 同一 provider 的 image_generation_call ID 列表 |
+| moderation | 可选官方 auto / low 设置；上游策略仍生效 |
+| partial_images | 默认 0；1–3 启用上游 SSE 和中间图 |
+| safety_identifier | 可选隐私保护后的用户标识，适用于多用户部署 |
+| include_preview | 默认 true，返回最多四张受大小限制的预览 |
 
-URL 和 API Key 不出现在工具参数中。原图按上游返回的字节保存；预览可能缩小和重新编码，预览不是原始交付文件。返回结构还包含实际模型、MIME、宽高、响应 ID、文字说明和 revised prompt。
+除确定文件格式所需的 output_format 外，未指定的高级图像参数不主动发送。专用图像模型由中转站/上游默认机制决定，服务不会假装知道实际选择了哪个模型。
 
-示例调用：
+基本示例：
 
-```json
+~~~json
 {
-  "prompt": "生成一个简洁的茶杯品牌图标，透明背景",
-  "project_dir": "E:/OpenProject/my-site",
-  "output_dir": "public/images",
-  "filename": "tea-logo.webp",
-  "background": "transparent",
-  "quality": "high",
-  "size": "1024x1024",
-  "responses_model": "gpt-6-astra"
+  "prompt": "生成一个简洁的茶杯图标，透明背景",
+  "cwd": "E:/OpenProject/my-site",
+  "current_model": "gpt-6-astra",
+  "output_dir": "assets",
+  "filename": "tea.webp",
+  "background": "transparent"
 }
-```
+~~~
 
-### `get_image_generation_status`
+current_model 不是安装配置项；示例值只有在会话确实提供该模型信息时才应传入。
 
-无参数。报告本地配置是否齐全、provider、模型与来源、凭据来源、默认保存规则。不会返回密钥、Authorization、完整请求头或查询参数，也不会请求上游。
+参考图支持：
 
-## 图像参数规则
+~~~json
+[
+  {"path": "assets/source.png"},
+  {"image_url": "https://example.com/reference.png"},
+  {"image_url": "data:image/png;base64,..."},
+  {"file_id": "file_example", "detail": "high"}
+]
+~~~
 
-- 只输出 PNG/JPEG/WebP，`jpg` 归一化为 `jpeg`；不输出 SVG 或动画 GIF。
-- 文件名后缀与显式格式不一致时，在请求前报错；返回字节的真实格式也会被检查。
-- 透明背景仅支持 PNG/WebP；JPEG + `transparent` 会在请求前报错。
-- GPT Image 2/2.5 自定义尺寸：宽高均为 16 的倍数，任一边不超过 3840，长宽比不超过 3:1，总像素在 655,360–8,294,400 之间。高于 2560×1440 的分辨率在官方文档中标为实验性。
-- 较早的已知图像模型仅接受其标准尺寸。未知中转模型别名保留字符串传递，实际能力由上游判断，不强行替换模型。
-- 参考图小于 50 MB。蒙版需与第一张参考图格式、尺寸一致，并有 alpha 通道；透明区域表示希望编辑的区域。模型对蒙版的遵循不是像素级保证。
-- `action=edit` 需要参考图或 previous response ID。纯本地参考图编辑不依赖上游会话存储。
-- `gpt-image-2` 的输入保真度自动为高，不传 `input_fidelity`；`gpt-image-1-mini` 只支持 `low`。
-- 请求前检查目标目录和重名文件，使用不覆盖写入；不会静默替换已有图片。相对输出路径必须留在项目内，用户显式指定的绝对目录可以位于项目外。
+detail 可为 auto / low / high / original。URL 直接交给上游，不在本地额外下载。文件 ID 和历史响应 ID 不可跨 provider 复用。蒙版优先使用本地文件、data URL 或 file ID；本地可读取的蒙版会检查 alpha，且在首张图片可本地比较时检查尺寸和格式。远程资源的内容限制由上游验证。
 
-第一版采用一次请求返回最终图片；不提供流式中间预览，不另外实现 Images API 的 `n` 参数。会处理 Responses 返回的所有图像 Item，但提示词要求的图片数量不代表上游一定返回该数量。
+## 文件与结果规则
 
-## 自动配置与模型选择
+- PNG/JPEG/WebP 原图按真实格式保存；不支持 SVG 和动画输出。
+- 显式格式与文件名后缀冲突、JPEG 透明背景、布尔/字符串压缩参数等，在请求前拒绝。
+- 上游没有遵守请求格式时，保留可用图片，以真实格式修正扩展名并返回警告；不会把 JPEG 字节冒充 PNG。
+- 请求前校验文件名和目标目录，并排他预留名称，避免同名并发重复生成。Windows 设备名、UTF-16 名称长度和文件系统限制会被检查。
+- 显式文件名用于第一张成功图片，后续图片编号；已有文件不覆盖。
+- 任一图像 Item 失败不会删除其他已成功生成的图片。保存失败按项报告，保留成功文件。
+- 结果包含 status、images、response_id、request_id、model/source、usage、warnings、errors，以及中间图信息。文本内容也包含路径、编辑 ID 和重要警告。
+- model 是实际请求的对话模型；reported_model 仅记录上游明确返回的模型名称，未知时为 null，不冒充已验证的会话模型或专用图像模型。
+- 预览可能缩小、重新编码；交付原图应使用返回的绝对路径。
+- 上游流式事件可以触发 MCP 进度通知；中间图在最终结果中可用，但 Codex 是否实时显示图片取决于客户端，不能等同于内置工具界面。
+- SDK 自动重试关闭。超时、断流或部分失败后，不自动换模型或重新生成，避免重复计费。
+- 图像处理和文件操作移出事件循环。取消会关闭上游连接、等待本地临界操作收尾并释放预留；不承诺硬杀正在运行的解码线程。已保存原图不会因取消被删除。
+- 本地处理预算：最多 16 个参考/历史图像引用，本地/data 输入合计 100 MB、单张小于 50 MB；最多 16 张最终图、合计 200 MiB、单张小于 100 MiB；最多保留 12 张中间图、合计 32 MiB。这些是应用资源限制，不是模型能力声明。
 
-每次调用读取用户级 `config.toml`。通过 `--profile NAME` 或 `CODEX_IMAGE_PROFILE` 选择 `$CODEX_HOME/NAME.config.toml`；兼容旧的内嵌 profile 配置。项目内部的 `.codex/config.toml` 不作为凭据来源。
+输出目录可能出现请求期间的隐藏锁/临时文件。不要删除正在使用的锁；进程意外终止留下的锁需要在确认没有相关任务后处理。
 
-支持 provider 的 `base_url`、`env_key`、`experimental_bearer_token`、`http_headers`、`env_http_headers` 和 `query_params`。地址中的查询参数会单独传给 SDK，避免破坏 `/responses` 路径。只有当前 provider 使用 OpenAI 认证时，才回退到 `OPENAI_API_KEY` 或 `auth.json` 的 `OPENAI_API_KEY`；不会借用别的 provider 的凭据。ChatGPT OAuth、系统钥匙串、仅内存登录和外部 token 命令不在第一版支持范围内，会给出诊断。对于 `cli_auth_credentials_store="auto"`，无法判断钥匙串还是文件为当前来源，因此也不自动使用残留 `auth.json`；显式配置的 API Key / provider 认证头仍可使用。
+## 验证与升级
 
-对话模型优先级：本次 `responses_model` → `--responses-model` / `CODEX_IMAGE_RESPONSES_MODEL` → 所选 profile / 用户配置 → 缺省 `gpt-6-astra`。
-
-图像模型优先级：本次 `image_model` → `--image-model` / `CODEX_IMAGE_MODEL` → `gpt-image-2.5-flare`。
-
-上面的接入示例明确使用你指定的 `gpt-6-astra`。删掉 `--responses-model` 及其值即可跟随配置文件中的模型；这不代表自动获知界面里的临时会话选择。
-
-| 可选环境变量 | 作用 |
-| --- | --- |
-| `CODEX_HOME` | 用户配置目录 |
-| `CODEX_IMAGE_PROFILE` | 显式选择配置 profile |
-| `CODEX_IMAGE_PROVIDER` | 显式选择用户配置中已有的 provider |
-| `CODEX_IMAGE_RESPONSES_MODEL` | 对话模型覆盖 |
-| `CODEX_IMAGE_MODEL` | 图像模型覆盖 |
-| `CODEX_IMAGE_TIMEOUT` | 上游请求超时秒数，默认 300；MCP 超时应更长 |
-| `CODEX_IMAGE_BASE_URL` + `CODEX_IMAGE_API_KEY` | 可选完整独立连接配置，必须同时提供，不混用原 provider 的认证头 |
-
-不自动搜索/加载项目 `.env`。常规使用直接复用 Codex 的用户级配置即可。
-
-## 验证与故障排查
-
-```powershell
+~~~powershell
 uv run --frozen python -B -m unittest discover -s tests -v
-uv run --frozen gpt-image-generation --check --responses-model gpt-6-astra
-```
+uv run --frozen gpt-image-generation --check
+~~~
 
-测试使用假配置、模拟 Responses 和本地小图片，覆盖格式/路径校验、错误处理、图像与元数据返回、真实 SDK 的离线 HTTP 请求构造以及真实 stdio 握手，不请求付费生成接口。
+离线测试使用假凭据、MockTransport、临时图片和真实 stdio 子进程。它们验证请求结构与工具行为，不代表任意中转站都支持相同能力。
 
-中转站必须支持 `/responses` 以及 `image_generation` 工具；仅提供普通对话能力不够。模型名称存在也不代表该中转已开放图像工具权限。
+0.2 版本调整：
 
-401/403、限流、超时、模型不支持、空结果和无效图片会作为工具错误返回，异常响应正文不会直接暴露给 Codex。SDK 自动重试关闭；遇到超时请先查看上游请求情况，避免重复生成和计费。默认不会修改用户所选模型进行回退。
+- 公开工具收敛为 generate_image；配置诊断使用 --check。
+- project_dir 改为 cwd；默认直接当前目录。
+- 不再使用旧的 --responses-model / --image-model 等独立模型启动设置；旧接入配置应重新用 --print-config 生成。
+- 旧的独立 URL / Key / 模型覆盖环境设置不再生效。连接来自 Codex 原配置，模型来自调用上下文或配置文件。
 
-本地文件写入遵循运行 MCP 进程的系统权限。生成结果落在用户指定的路径；工具的调用仍由宿主 Codex 的权限策略管理。
+本项目不会自动改写 Codex 的用户配置。安装和接入只需做一次，正常生成不需要重新输入凭据。
 
 ## 官方依据
 
-参数按 2026-10-31 读取的官方文档及本项目锁定的 SDK 核对：
-
 - [Responses 图像生成工具](https://developers.openai.com/api/docs/guides/tools-image-generation)
-- [图像生成、尺寸、格式与蒙版要求](https://developers.openai.com/api/docs/guides/image-generation)
+- [Responses Create API](https://developers.openai.com/api/reference/resources/responses/methods/create)
+- [图像生成指南](https://developers.openai.com/api/docs/guides/image-generation)
+- [Codex 高级配置](https://developers.openai.com/codex/config-advanced)
 - [Codex 配置参考](https://developers.openai.com/codex/config-reference)
-- [Codex 认证与凭据存储](https://developers.openai.com/codex/auth)
+
+中转站必须支持 Responses 和 image_generation，且允许所选对话模型调用图像工具。省略工具内模型字段意味着使用上游默认路由，并不保证任意中转实现都能成功出图。

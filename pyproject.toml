@@ -1,6 +1,6 @@
 [project]
 name = "gpt-image-generation"
-version = "0.1.0"
+version = "0.2.0"
 description = "A local Codex MCP server for Responses image generation using existing provider credentials"
 readme = "README.md"
 authors = [
@@ -11,7 +11,6 @@ dependencies = [
     "fastmcp>=4.1.4,<5",
     "openai>=3.42.0,<4",
     "pillow>=11.3,<14",
-    "python-dotenv>=1.2.4",
 ]
 
 [project.scripts]
