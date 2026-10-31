@@ -1,0 +1,56 @@
+name: 问题反馈
+description: 报告安装、配置、图片生成或文件保存问题
+title: "[Bug] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        请用最小示例描述问题。疑似漏洞或凭据泄漏请按仓库 SECURITY.md 私下联系维护者。
+        不要粘贴完整 Codex 配置、完整 --check 输出、API Key、认证头、私人地址或用户图片。
+  - type: input
+    id: version
+    attributes:
+      label: 项目版本
+      description: 可通过 gpt-image-generation --version 获取。
+      placeholder: "0.3.0"
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: 运行环境
+      description: 操作系统、CPU 架构、Python 版本，以及 wheel 或源码安装方式。
+      placeholder: "Windows 11 / x64 / Python 3.11 / uv tool install wheel"
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤
+      description: 使用可公开的提示词、测试图片和示例路径；不要提供真实凭据。
+      placeholder: |
+        1. 安装并接入 MCP
+        2. 输入……
+        3. 观察到……
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期行为与实际结果
+      description: 说明希望发生什么，以及实际发生了什么。
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: 脱敏后的错误信息
+      description: 仅附相关错误片段。删除密钥、认证头、私人 URL、个人路径及不便公开的响应 ID。
+      render: text
+  - type: checkboxes
+    id: redaction
+    attributes:
+      label: 提交前检查
+      options:
+        - label: 已确认内容不包含真实凭据、私人配置或未经授权的图片。
+          required: true

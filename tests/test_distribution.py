@@ -29,10 +29,11 @@ NAME = "gpt-image-generation"
 MODULE = "gpt_image_generation"
 VERSION = "0.3.0"
 DIST_INFO = f"{MODULE}-{VERSION}.dist-info"
-METADATA = f"Metadata-Version: 2.3\nName: {NAME}\nVersion: {VERSION}\n".encode()
+METADATA = f"Metadata-Version: 2.4\nName: {NAME}\nVersion: {VERSION}\nLicense-Expression: MIT\nLicense-File: LICENSE\n".encode()
+LICENSE = b"MIT License\n\nCopyright (c) 2026 TangRuoJie\nFixture license text.\n"
 
 
-def make_wheel(directory: Path, extra=None) -> Path:
+def make_wheel(directory: Path, extra=None, *, omit=()) -> Path:
     path = directory / f"{MODULE}-{VERSION}-py3-none-any.whl"
     members = {
         f"{MODULE}/__init__.py": b"# fixture\n",
@@ -41,24 +42,29 @@ def make_wheel(directory: Path, extra=None) -> Path:
         f"{DIST_INFO}/WHEEL": b"Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
         f"{DIST_INFO}/entry_points.txt": b"[console_scripts]\ngpt-image-generation = gpt_image_generation:main\n",
         f"{DIST_INFO}/RECORD": b"",
+        f"{DIST_INFO}/licenses/LICENSE": LICENSE,
     }
     with zipfile.ZipFile(path, "w") as archive:
         for name, data in {**members, **(extra or {})}.items():
-            archive.writestr(name, data)
+            if name not in omit:
+                archive.writestr(name, data)
     return path
 
 
-def make_sdist(directory: Path, extra=None) -> Path:
+def make_sdist(directory: Path, extra=None, *, omit=()) -> Path:
     path = directory / f"{MODULE}-{VERSION}.tar.gz"
     members = {
         "pyproject.toml": b"[project]\n",
         "README.md": b"Fixture documentation\n",
         "PKG-INFO": METADATA,
+        "LICENSE": LICENSE,
         f"src/{MODULE}/__init__.py": b"# fixture\n",
         f"src/{MODULE}/__main__.py": b"# fixture\n",
     }
     with tarfile.open(path, "w:gz") as archive:
         for name, data in {**members, **(extra or {})}.items():
+            if name in omit:
+                continue
             entry = tarfile.TarInfo(f"{MODULE}-{VERSION}/{name}")
             entry.size = len(data)
             archive.addfile(entry, io.BytesIO(data))
@@ -66,6 +72,47 @@ def make_sdist(directory: Path, extra=None) -> Path:
 
 
 class DistributionTests(unittest.TestCase):
+    def test_accepts_pep639_license_and_community_documents(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            wheel = make_wheel(root)
+            with zipfile.ZipFile(wheel, "a") as archive:
+                archive.writestr(f"{DIST_INFO}/licenses/", b"")
+            files = release.validate_wheel(wheel, NAME, MODULE, VERSION, expected_license=LICENSE)
+            self.assertIn(f"{DIST_INFO}/licenses/LICENSE", files)
+            sdist = make_sdist(root, {"CONTRIBUTING.md": b"Contribute", "SECURITY.md": b"Report privately"})
+            files = release.validate_sdist(sdist, NAME, MODULE, VERSION, expected_license=LICENSE)
+            self.assertTrue({"LICENSE", "CONTRIBUTING.md", "SECURITY.md"} <= set(files))
+
+    def test_rejects_missing_or_empty_license(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for builder, validator, path in (
+                (make_wheel, release.validate_wheel, f"{DIST_INFO}/licenses/LICENSE"),
+                (make_sdist, release.validate_sdist, "LICENSE"),
+            ):
+                with self.subTest(kind=builder.__name__, missing=True), self.assertRaisesRegex(ValueError, "Incomplete"):
+                    validator(builder(root, omit={path}), NAME, MODULE, VERSION)
+                with self.subTest(kind=builder.__name__, empty=True), self.assertRaisesRegex(ValueError, "LICENSE is empty"):
+                    validator(builder(root, {path: b"\n"}), NAME, MODULE, VERSION)
+
+    def test_rejects_license_metadata_or_contents_that_differ(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for builder, validator, metadata_path in (
+                (make_wheel, release.validate_wheel, f"{DIST_INFO}/METADATA"),
+                (make_sdist, release.validate_sdist, "PKG-INFO"),
+            ):
+                for metadata in (
+                    METADATA.replace(b"License-Expression: MIT\n", b""),
+                    METADATA.replace(b"License-Expression: MIT", b"License-Expression: Apache-2.0"),
+                    METADATA.replace(b"License-File: LICENSE", b"License-File: OTHER"),
+                ):
+                    with self.subTest(kind=builder.__name__, metadata=metadata), self.assertRaisesRegex(ValueError, "declare MIT"):
+                        validator(builder(root, {metadata_path: metadata}), NAME, MODULE, VERSION)
+                with self.subTest(kind=builder.__name__, stale=True), self.assertRaisesRegex(ValueError, "differs from the project LICENSE"):
+                    validator(builder(root), NAME, MODULE, VERSION, expected_license=LICENSE + b"Updated terms\n")
+
     def test_allows_uv_original_project_metadata(self):
         with tempfile.TemporaryDirectory() as directory:
             sdist = make_sdist(Path(directory), {"pyproject.toml.orig": b"[project]\n"})
@@ -120,6 +167,7 @@ class DistributionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "pyproject.toml").write_text(f'[project]\nname="{NAME}"\nversion="{VERSION}"\n', encoding="utf-8")
+            (root / "LICENSE").write_bytes(LICENSE)
             (root / "docs").mkdir()
             (root / "docs" / "INSTALL.md").write_text("Install the local wheel.\n", encoding="utf-8")
             (root / "examples").mkdir()
@@ -145,8 +193,9 @@ class DistributionTests(unittest.TestCase):
             with zipfile.ZipFile(destination / f"{NAME}-{VERSION}.zip") as archive:
                 self.assertEqual(set(archive.namelist()), {
                     f"{MODULE}-{VERSION}-py3-none-any.whl", f"{MODULE}-{VERSION}.tar.gz",
-                    "INSTALL.md", "codex-uvx.toml", "SHA256SUMS",
+                    "INSTALL.md", "codex-uvx.toml", "LICENSE", "SHA256SUMS",
                 })
+                self.assertEqual(archive.read("LICENSE"), LICENSE)
                 for line in archive.read("SHA256SUMS").decode().splitlines():
                     digest, filename = line.split("  ")
                     self.assertEqual(digest, hashlib.sha256(archive.read(filename)).hexdigest())
@@ -155,6 +204,7 @@ class DistributionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "pyproject.toml").write_text(f'[project]\nname="{NAME}"\nversion="{VERSION}"\n', encoding="utf-8")
+            (root / "LICENSE").write_bytes(LICENSE)
             (root / "docs").mkdir()
             (root / "docs" / "INSTALL.md").touch()
             (root / "examples").mkdir()

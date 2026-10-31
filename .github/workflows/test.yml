@@ -4,11 +4,38 @@ on:
   push:
   pull_request:
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      source_ref:
+        description: Exact source commit to test when called by the release workflow
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
 
 jobs:
+  secret-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Scan Git history without exposing matched values
+        run: |
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            --network none --read-only --cap-drop ALL \
+            --security-opt no-new-privileges \
+            --tmpfs /tmp:rw,size=64m \
+            --mount "type=bind,source=$GITHUB_WORKSPACE,target=/repo,readonly" \
+            ghcr.io/gitleaks/gitleaks@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f \
+            git /repo --log-opts=--all --redact=100 --no-banner --config=/repo/.gitleaks.toml
+
   test:
     strategy:
       fail-fast: false
@@ -22,13 +49,43 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
+          persist-credentials: false
       - uses: astral-sh/setup-uv@v6
         with:
           version: "0.12.23"
           python-version: ${{ matrix.python }}
       - run: uv sync --locked
+      - name: Read package version
+        id: package
+        shell: bash
+        run: |
+          uv run --locked python - <<'PY'
+          import os
+          from pathlib import Path
+          import re
+          import tomllib
+
+          version = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
+          if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
+              raise SystemExit("Expected a stable X.Y.Z project version")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"version={version}\n")
+          PY
       - run: uv run --locked python -B -m unittest discover -s tests -v
       - run: uv run --locked python scripts/build_release.py
       - name: Test installed wheel outside source checkout
         shell: bash
         run: uv run --locked python scripts/smoke_wheel.py --wheel dist/*-py3-none-any.whl
+      - name: Keep tested distributions
+        uses: actions/upload-artifact@v4
+        with:
+          name: distribution-${{ steps.package.outputs.version }}-${{ matrix.os }}-py${{ matrix.python }}
+          path: |
+            dist/*.whl
+            dist/*.tar.gz
+            dist/*.zip
+            dist/SHA256SUMS-*.txt
+          if-no-files-found: error
+          retention-days: 30

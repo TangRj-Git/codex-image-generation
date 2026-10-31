@@ -8,6 +8,8 @@ Codex 调用 `generate_image`，工具复用用户已有的 Codex URL、API Key 
 
 无需另配图像模型；请求通过 Responses API 的 `image_generation` 工具完成，不发送 `tools[].model`。中转站必须支持这一接口，并允许所选对话模型调用图像工具。
 
+本项目由 TangRuoJie 维护，采用 [MIT 许可证](LICENSE)，是独立社区项目，与 OpenAI 无隶属关系。
+
 ## 生成效果展示
 
 示例：阳光下、动漫风格的可爱小狗。
@@ -16,7 +18,7 @@ Codex 调用 `generate_image`，工具复用用户已有的 Codex URL、API Key 
 
 ## 下载包后安装
 
-当前版本：**0.3.0**。分发包为 `gpt-image-generation-0.3.0.zip`，内含 wheel、源码包、安装说明、配置示例和 SHA-256 校验清单。这是 Python 安装包，需要 [uv](https://docs.astral.sh/uv/getting-started/installation/)；首次安装需要联网下载 Python（如果缺少）和依赖。
+当前版本：**0.3.0**。分发包为 `gpt-image-generation-0.3.0.zip`，内含 wheel、源码包、安装说明、许可证、配置示例和 SHA-256 校验清单。这是 Python 安装包，需要 [uv](https://docs.astral.sh/uv/getting-started/installation/)；首次安装需要联网下载 Python（如果缺少）和依赖。
 
 解压后，在解压目录的终端执行。下面的命令适用于 Windows PowerShell、macOS 和 Linux：
 
@@ -128,9 +130,16 @@ dist/
 
 构建脚本检查包内容，不纳入本地配置、凭据或虚拟环境。源码包包含 README 使用的展示图 `sunny-anime-puppy.png`，其他生成图片不纳入；wheel 不包含展示图。安装冒烟测试使用临时安装目录、假凭据和无网络图像请求，从其他工作目录验证 CLI 与 MCP；不会替换你的全局安装。
 
-仓库包含 Windows、Linux、macOS 的 CI 工作流，执行测试、打包和安装验证；工作流是否通过以实际运行结果为准。当前产物在本地构建，尚未上传 PyPI 或其他公开下载服务；不要将裸命令 `uvx gpt-image-generation` 视为已验证的安装入口。
+仓库包含 Windows、Linux、macOS 的 CI 工作流，执行测试、打包和安装验证，并保存构建产物。维护者可手动运行发布工作流，为已存在的版本标签创建 GitHub Release 草稿；只有全部检查通过才会创建草稿。工作流是否通过以实际运行结果为准。当前产物在本地构建，尚未上传 PyPI 或其他公开下载服务；不要将裸命令 `uvx gpt-image-generation` 视为已验证的安装入口。
 
-详见 [发布维护说明](docs/RELEASING.md) 和 [更新记录](CHANGELOG.md)。公开分发前还需由项目所有者确定许可证。
+详见 [发布维护说明](docs/RELEASING.md) 和 [更新记录](CHANGELOG.md)。
+
+## 贡献、反馈与许可
+
+- 作者：TangRuoJie；邮箱：[3177065378@qq.com](mailto:3177065378@qq.com)。
+- 贡献代码或改进文档，请先阅读 [贡献指南](CONTRIBUTING.md)。
+- 普通问题可通过仓库 Issues 反馈；漏洞或凭据泄漏请按 [安全报告说明](SECURITY.md) 私下联系。
+- 本项目采用 [MIT 许可证](LICENSE)，允许使用、修改和商业分发，分发时需保留版权及许可声明。第三方依赖遵循各自的许可证。
 
 ## 官方参考
 

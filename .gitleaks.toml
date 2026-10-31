@@ -1,0 +1,13 @@
+title = "Project secret scanning"
+
+[extend]
+useDefault = true
+
+# Only the exact synthetic credential in the redaction regression test is allowed.
+# Do not ignore entire test directories or arbitrary fake-key prefixes.
+[[allowlists]]
+description = "Synthetic credential used solely by ResultRedactionTests"
+condition = "AND"
+regexTarget = "secret"
+paths = ["(^|/)tests/test_result_redaction\\.py$"]
+regexes = ["^fixture_secret_abcdef123456$"]

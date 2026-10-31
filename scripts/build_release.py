@@ -43,10 +43,20 @@ def validate_metadata(data: bytes, name: str, version: str) -> None:
     normalize = lambda value: re.sub(r"[-_.]+", "-", value).lower()
     if normalize(metadata.get("Name", "")) != normalize(name) or metadata.get("Version") != version:
         raise ValueError("Built distribution metadata differs from pyproject.toml")
+    if metadata.get_all("License-Expression") != ["MIT"] or metadata.get_all("License-File") != ["LICENSE"]:
+        raise ValueError("Built distribution must declare MIT and the LICENSE file")
 
 
-def validate_wheel(path: Path, name: str, module: str, version: str) -> list[str]:
+def validate_license(data: bytes, expected: bytes | None) -> None:
+    if not data.strip():
+        raise ValueError("Packaged LICENSE is empty")
+    if expected is not None and data != expected:
+        raise ValueError("Packaged LICENSE differs from the project LICENSE")
+
+
+def validate_wheel(path: Path, name: str, module: str, version: str, *, expected_license: bytes | None = None) -> list[str]:
     dist_info = f"{module}-{version}.dist-info"
+    license_path = f"{dist_info}/licenses/LICENSE"
     seen: set[str] = set()
     files: list[str] = []
     with zipfile.ZipFile(path) as archive:
@@ -59,10 +69,10 @@ def validate_wheel(path: Path, name: str, module: str, version: str) -> list[str
             if stat.S_ISLNK(entry.external_attr >> 16):
                 raise ValueError(f"Symlink in wheel: {entry.filename}")
             if entry.is_dir():
-                if str(member) not in {module, dist_info}:
+                if str(member) not in {module, dist_info, f"{dist_info}/licenses"}:
                     raise ValueError(f"Unexpected wheel directory: {entry.filename}")
                 continue
-            allowed = (
+            allowed = str(member) == license_path or (
                 len(member.parts) == 2
                 and (
                     (member.parts[0] == module and member.suffix == ".py")
@@ -75,20 +85,21 @@ def validate_wheel(path: Path, name: str, module: str, version: str) -> list[str
             if not allowed:
                 raise ValueError(f"Unexpected wheel file: {entry.filename}")
             files.append(str(member))
-        required = {f"{module}/__init__.py", f"{module}/__main__.py", f"{dist_info}/METADATA", f"{dist_info}/WHEEL", f"{dist_info}/entry_points.txt", f"{dist_info}/RECORD"}
+        required = {f"{module}/__init__.py", f"{module}/__main__.py", f"{dist_info}/METADATA", f"{dist_info}/WHEEL", f"{dist_info}/entry_points.txt", f"{dist_info}/RECORD", license_path}
         if not required <= set(files):
             raise ValueError(f"Incomplete wheel: {sorted(required - set(files))}")
         validate_metadata(archive.read(f"{dist_info}/METADATA"), name, version)
+        validate_license(archive.read(license_path), expected_license)
         wheel_metadata = BytesParser().parsebytes(archive.read(f"{dist_info}/WHEEL"))
         if wheel_metadata.get("Root-Is-Purelib") != "true" or "py3-none-any" not in wheel_metadata.get_all("Tag", []):
             raise ValueError("Expected a portable pure-Python py3-none-any wheel")
     return files
 
 
-def validate_sdist(path: Path, name: str, module: str, version: str) -> list[str]:
+def validate_sdist(path: Path, name: str, module: str, version: str, *, expected_license: bytes | None = None) -> list[str]:
     root = f"{module}-{version}"
     # uv may preserve the original TOML beside its normalized copy.
-    root_files = {"pyproject.toml", "pyproject.toml.orig", "README.md", "CHANGELOG.md", "uv.lock", ".python-version", "PKG-INFO", "sunny-anime-puppy.png"}
+    root_files = {"pyproject.toml", "pyproject.toml.orig", "README.md", "CHANGELOG.md", "CONTRIBUTING.md", "SECURITY.md", "LICENSE", "uv.lock", ".python-version", "PKG-INFO", "sunny-anime-puppy.png"}
     allowed_dirs = {"src", f"src/{module}", "tests", "scripts", "docs", "examples"}
     seen: set[str] = set()
     files: list[str] = []
@@ -118,7 +129,7 @@ def validate_sdist(path: Path, name: str, module: str, version: str) -> list[str
             if not allowed:
                 raise ValueError(f"Unexpected sdist file: {entry.name}")
             files.append(str(relative))
-        required = {"pyproject.toml", "README.md", "PKG-INFO", f"src/{module}/__init__.py", f"src/{module}/__main__.py"}
+        required = {"pyproject.toml", "README.md", "PKG-INFO", "LICENSE", f"src/{module}/__init__.py", f"src/{module}/__main__.py"}
         if not required <= set(files):
             raise ValueError(f"Incomplete sdist: {sorted(required - set(files))}")
         metadata_file = archive.extractfile(f"{root}/PKG-INFO")
@@ -126,6 +137,11 @@ def validate_sdist(path: Path, name: str, module: str, version: str) -> list[str
             raise ValueError("Source distribution has no metadata")
         with metadata_file:
             validate_metadata(metadata_file.read(), name, version)
+        license_file = archive.extractfile(f"{root}/LICENSE")
+        if license_file is None:
+            raise ValueError("Source distribution has no LICENSE")
+        with license_file:
+            validate_license(license_file.read(), expected_license)
     return files
 
 
@@ -157,21 +173,26 @@ def build_release(project: Path, out_dir: Path) -> list[Path]:
         raise RuntimeError("uv is required to build a release: https://docs.astral.sh/uv/")
     guide = project / "docs" / "INSTALL.md"
     example = project / "examples" / "codex-uvx.toml"
-    for required in (guide, example):
+    license_source = project / "LICENSE"
+    for required in (guide, example, license_source):
         if not required.is_file():
             raise FileNotFoundError(f"Missing release documentation: {required}")
+    expected_license = license_source.read_bytes()
+    validate_license(expected_license, None)
     with tempfile.TemporaryDirectory(prefix="image-mcp-release-") as directory:
         temporary = Path(directory)
         subprocess.run([uv, "build", "--no-create-gitignore", "--out-dir", str(temporary), str(project)], check=True, cwd=project)
         wheel = temporary / f"{module}-{version}-py3-none-any.whl"
         sdist = temporary / f"{module}-{version}.tar.gz"
-        validate_wheel(wheel, name, module, version)
-        validate_sdist(sdist, name, module, version)
+        validate_wheel(wheel, name, module, version, expected_license=expected_license)
+        validate_sdist(sdist, name, module, version, expected_license=expected_license)
         guide_copy = temporary / "INSTALL.md"
         example_copy = temporary / "codex-uvx.toml"
+        license_copy = temporary / "LICENSE"
         shutil.copyfile(guide, guide_copy)
         shutil.copyfile(example, example_copy)
-        members = [wheel, sdist, guide_copy, example_copy]
+        license_copy.write_bytes(expected_license)
+        members = [wheel, sdist, guide_copy, example_copy, license_copy]
         inner_checksums = temporary / "SHA256SUMS"
         inner_checksums.write_text(checksums(members), encoding="utf-8", newline="\n")
         bundle = temporary / f"{name}-{version}.zip"

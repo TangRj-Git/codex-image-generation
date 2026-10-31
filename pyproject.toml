@@ -4,8 +4,10 @@ version = "0.3.0"
 description = "A local Codex MCP server for Responses image generation using existing provider credentials"
 readme = "README.md"
 authors = [
-    { name = "Administrator", email = "3177065378@qq.com" }
+    { name = "TangRuoJie", email = "3177065378@qq.com" }
 ]
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 keywords = ["codex", "mcp", "fastmcp", "image-generation", "responses"]
 classifiers = [
@@ -35,6 +37,8 @@ module-name = "gpt_image_generation"
 module-root = "src"
 source-include = [
     "CHANGELOG.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
     "sunny-anime-puppy.png",
     "docs/*.md",
     "examples/*.toml",

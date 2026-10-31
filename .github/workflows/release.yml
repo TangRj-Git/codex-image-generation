@@ -1,0 +1,164 @@
+name: Prepare draft release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing stable version tag, for example v0.3.0
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: draft-release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      sha: ${{ steps.version.outputs.sha }}
+      tag: ${{ steps.version.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.12.23"
+          python-version: "3.11"
+      - name: Resolve existing tag and verify version
+        id: version
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+          EVENT_REF: ${{ github.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          uv run --no-project --python 3.11 python - <<'PY'
+          import ast
+          import os
+          import re
+          import subprocess
+          import tomllib
+
+          if os.environ["EVENT_REF"] != "refs/heads/" + os.environ["DEFAULT_BRANCH"]:
+              raise SystemExit("Run this workflow from the repository default branch")
+          tag = os.environ["RELEASE_TAG"]
+          if not re.fullmatch(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", tag):
+              raise SystemExit("Expected an existing stable version tag: vX.Y.Z")
+          sha = subprocess.check_output(
+              ["git", "rev-parse", "--verify", f"refs/tags/{tag}^{{commit}}"], text=True,
+          ).strip()
+          def source(path):
+              return subprocess.check_output(["git", "show", f"{sha}:{path}"]).decode("utf-8")
+
+          version = tomllib.loads(source("pyproject.toml"))["project"]["version"]
+          module = ast.parse(source("src/gpt_image_generation/__init__.py"))
+          versions = [
+              ast.literal_eval(node.value)
+              for node in module.body
+              if isinstance(node, ast.Assign)
+              and any(isinstance(target, ast.Name) and target.id == "__version__" for target in node.targets)
+          ]
+          if tag != "v" + version or versions != [version]:
+              raise SystemExit("Tag, project.version and __version__ must match")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"sha={sha}\ntag={tag}\nversion={version}\n")
+          print(f"Testing {tag} at {sha}")
+          PY
+
+  checks:
+    needs: resolve
+    uses: ./.github/workflows/test.yml
+    with:
+      source_ref: ${{ needs.resolve.outputs.sha }}
+
+  draft:
+    needs: [resolve, checks]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      # Only consume checked artifacts here; no project code runs with write access.
+      - uses: actions/download-artifact@v4
+        with:
+          name: distribution-${{ needs.resolve.outputs.version }}-ubuntu-latest-py3.11
+          path: dist
+      - name: Verify tested artifacts and create a draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.resolve.outputs.tag }}
+          RELEASE_VERSION: ${{ needs.resolve.outputs.version }}
+          SOURCE_SHA: ${{ needs.resolve.outputs.sha }}
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          tag = os.environ["RELEASE_TAG"]
+          version = os.environ["RELEASE_VERSION"]
+          sha = os.environ["SOURCE_SHA"]
+
+          def github_json(path, *, missing_ok=False):
+              result = subprocess.run(["gh", "api", path], capture_output=True, text=True)
+              if result.returncode:
+                  if missing_ok and "(HTTP 404)" in result.stderr:
+                      return None
+                  raise SystemExit(f"GitHub API request failed: {result.stderr}")
+              return json.loads(result.stdout)
+
+          if github_json(f"repos/{repo}/releases/tags/{tag}", missing_ok=True) is not None:
+              raise SystemExit("A release already exists for this tag; it will not be overwritten")
+          target = github_json(f"repos/{repo}/git/ref/tags/{tag}")["object"]
+          for _ in range(16):
+              if target["type"] != "tag":
+                  break
+              target = github_json(f"repos/{repo}/git/tags/{target['sha']}")["object"]
+          if target["type"] != "commit" or target["sha"] != sha:
+              raise SystemExit("Remote tag no longer points to the tested commit")
+
+          expected = {
+              f"gpt_image_generation-{version}-py3-none-any.whl",
+              f"gpt_image_generation-{version}.tar.gz",
+              f"gpt-image-generation-{version}.zip",
+          }
+          checksums = Path("dist") / f"SHA256SUMS-{version}.txt"
+          seen = set()
+          for line in checksums.read_text(encoding="utf-8").splitlines():
+              digest, name = line.split("  ", 1)
+              if name not in expected or name in seen:
+                  raise SystemExit("Unexpected or duplicate checksum entry")
+              seen.add(name)
+              artifact = Path("dist") / name
+              if artifact.is_symlink() or not artifact.is_file():
+                  raise SystemExit("Missing or invalid distribution file")
+              if hashlib.sha256(artifact.read_bytes()).hexdigest() != digest:
+                  raise SystemExit(f"Checksum mismatch: {name}")
+          if seen != expected:
+              raise SystemExit("Distribution checksum list is incomplete")
+
+          notes = Path("release-notes.md")
+          notes.write_text(
+              f"{tag} 的分发包已通过 Windows、Linux、macOS CI 测试、构建和独立安装验证。\n\n"
+              "下载 ZIP，按照包内 INSTALL.md 安装并接入 Codex。首次安装需要联网获取 Python 和依赖。\n\n"
+              "这是待维护者检查的发布草稿；确认版本说明与附件后再公开发布。\n\n"
+              f"源码提交：`{sha}`\n",
+              encoding="utf-8",
+          )
+          subprocess.run([
+              "gh", "release", "create", tag,
+              "--repo", repo, "--draft", "--verify-tag", "--target", sha,
+              "--title", tag, "--notes-file", str(notes),
+              *[str(Path("dist") / name) for name in sorted(expected)], str(checksums),
+          ], check=True)
+          PY
