@@ -8,3 +8,13 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Local credentials and generated images
+.env
+.env.*
+!.env.example
+/outputs/
+
+# Test and lint caches
+.pytest_cache/
+.ruff_cache/
