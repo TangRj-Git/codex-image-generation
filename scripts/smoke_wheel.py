@@ -62,12 +62,12 @@ import sys
 
 from fastmcp import Client
 from fastmcp.client.transports import StdioTransport
-import gpt_image_generation
+import codex_image_generation
 
 async def check():
     config = json.loads(sys.argv[1])
     root = Path(sys.argv[2])
-    installed_file = Path(gpt_image_generation.__file__).resolve()
+    installed_file = Path(codex_image_generation.__file__).resolve()
     assert installed_file.is_relative_to(root / "tools"), str(installed_file)
     with (root / "stdio.log").open("w", encoding="utf-8") as log:
         transport = StdioTransport(
@@ -100,8 +100,8 @@ def smoke_wheel(wheel: Path) -> None:
         if len(metadata_names) != 1:
             raise ValueError("Expected exactly one wheel METADATA file")
         metadata = BytesParser().parsebytes(archive.read(metadata_names[0]))
-        if metadata["Name"] != "gpt-image-generation":
-            raise ValueError("Wheel is not gpt-image-generation")
+        if metadata["Name"] != "codex-image-generation":
+            raise ValueError("Wheel is not codex-image-generation")
         version = metadata["Version"]
     uv = shutil.which("uv")
     if not uv:
@@ -120,7 +120,7 @@ def smoke_wheel(wheel: Path) -> None:
         unrelated.mkdir()
         print(f"Installing {wheel.name} in an isolated temporary environment...", flush=True)
         run([uv, "tool", "install", "--python", sys.executable, str(wheel)], cwd=unrelated, env=env, timeout=600)
-        executable = root / "bin" / ("gpt-image-generation.exe" if os.name == "nt" else "gpt-image-generation")
+        executable = root / "bin" / ("codex-image-generation.exe" if os.name == "nt" else "codex-image-generation")
         if not executable.is_file():
             raise RuntimeError(f"Installed console entry point was not found: {executable}")
         actual_version = run([str(executable), "--version"], cwd=unrelated, env=env).strip()

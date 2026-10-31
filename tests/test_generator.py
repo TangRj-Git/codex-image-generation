@@ -17,9 +17,9 @@ import httpx2
 from openai import APIStatusError, AsyncOpenAI
 from PIL import Image
 
-from gpt_image_generation.errors import ImageToolError
-from gpt_image_generation import generator
-from gpt_image_generation.generator import generate, validate_options
+from codex_image_generation.errors import ImageToolError
+from codex_image_generation import generator
+from codex_image_generation.generator import generate, validate_options
 
 
 def image_bytes(fmt="png", alpha=255, size=(16, 24)):

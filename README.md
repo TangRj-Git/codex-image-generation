@@ -18,26 +18,26 @@ Codex 调用 `generate_image`，工具复用用户已有的 Codex URL、API Key 
 
 ## 下载包后安装
 
-当前版本：**0.3.0**。分发包为 `gpt-image-generation-0.3.0.zip`，内含 wheel、源码包、安装说明、许可证、配置示例和 SHA-256 校验清单。这是 Python 安装包，需要 [uv](https://docs.astral.sh/uv/getting-started/installation/)；首次安装需要联网下载 Python（如果缺少）和依赖。
+当前版本：**0.3.0**。分发包为 `codex-image-generation-0.3.0.zip`，内含 wheel、源码包、安装说明、许可证、配置示例和 SHA-256 校验清单。这是 Python 安装包，需要 [uv](https://docs.astral.sh/uv/getting-started/installation/)；首次安装需要联网下载 Python（如果缺少）和依赖。
 
-分享给别人时，发送 `dist/gpt-image-generation-0.3.0.zip` 即可，对方按照包内 `INSTALL.md` 操作。以后公开 Release 后，下载其中的同名附件；GitHub 自动提供的 `Source code.zip` 是源码归档，不是这个安装分发包。
+分享给别人时，发送 `dist/codex-image-generation-0.3.0.zip` 即可，对方按照包内 `INSTALL.md` 操作。以后公开 Release 后，下载其中的同名附件；GitHub 自动提供的 `Source code.zip` 是源码归档，不是这个安装分发包。
 
 **第 1 步：准备自己的环境。** 对方需要已安装 Codex、已有可用的中转站配置，并安装 uv。执行 `uv --version` 确认命令可用。URL、API Key 和模型复用对方自己的 Codex 配置，不需要复制作者的配置。
 
 **第 2 步：安装并检查。** 解压 ZIP，在包含 `.whl` 文件的解压目录打开终端。下面的命令适用于 Windows PowerShell、macOS 和 Linux：
 
 ~~~sh
-uv tool install --python 3.11 ./gpt_image_generation-0.3.0-py3-none-any.whl
-gpt-image-generation --version
-gpt-image-generation --check
+uv tool install --python 3.11 ./codex_image_generation-0.3.0-py3-none-any.whl
+codex-image-generation --version
+codex-image-generation --check
 ~~~
 
-如果系统找不到 `gpt-image-generation`，执行 `uv tool update-shell` 后重新打开终端。版本应显示 `0.3.0`，检查结果应包含 `configured: true`；`connection_verified: false` 是正常的，因为此命令只检查本地配置，不请求中转站。检查失败时，先按 [安装说明中的故障排查](docs/INSTALL.md#常见问题) 修正现有配置。
+如果系统找不到 `codex-image-generation`，执行 `uv tool update-shell` 后重新打开终端。版本应显示 `0.3.0`，检查结果应包含 `configured: true`；`connection_verified: false` 是正常的，因为此命令只检查本地配置，不请求中转站。检查失败时，先按 [安装说明中的故障排查](docs/INSTALL.md#常见问题) 修正现有配置。
 
 **第 3 步：生成接入配置。** 执行：
 
 ~~~sh
-gpt-image-generation --print-config
+codex-image-generation --print-config
 ~~~
 
 **第 4 步：保存配置。** 将上一步输出的整个 `[mcp_servers.image_generation]` TOML 配置块加入**自己电脑**的 Codex 用户配置文件并保存。这条命令只打印内容，不会自动完成接入。
@@ -129,22 +129,22 @@ gpt-image-generation --print-config
 uv sync --locked
 uv run --locked python -B -m unittest discover -s tests -v
 uv run --locked python scripts/build_release.py
-uv run --locked python scripts/smoke_wheel.py --wheel dist/gpt_image_generation-0.3.0-py3-none-any.whl
+uv run --locked python scripts/smoke_wheel.py --wheel dist/codex_image_generation-0.3.0-py3-none-any.whl
 ~~~
 
 构建输出：
 
 ~~~text
 dist/
-  gpt_image_generation-0.3.0-py3-none-any.whl
-  gpt_image_generation-0.3.0.tar.gz
-  gpt-image-generation-0.3.0.zip
+  codex_image_generation-0.3.0-py3-none-any.whl
+  codex_image_generation-0.3.0.tar.gz
+  codex-image-generation-0.3.0.zip
   SHA256SUMS-0.3.0.txt
 ~~~
 
 构建脚本检查包内容，不纳入本地配置、凭据或虚拟环境。源码包包含 README 使用的展示图 `sunny-anime-puppy.png`，其他生成图片不纳入；wheel 不包含展示图。安装冒烟测试使用临时安装目录、假凭据和无网络图像请求，从其他工作目录验证 CLI 与 MCP；不会替换你的全局安装。
 
-仓库包含 Windows、Linux、macOS 的 CI 工作流，执行测试、打包和安装验证，并保存构建产物。维护者可手动运行发布工作流，为已存在的版本标签创建 GitHub Release 草稿；只有全部检查通过才会创建草稿。工作流是否通过以实际运行结果为准。当前产物在本地构建，尚未上传 PyPI 或其他公开下载服务；不要将裸命令 `uvx gpt-image-generation` 视为已验证的安装入口。
+仓库包含 Windows、Linux、macOS 的 CI 工作流，执行测试、打包和安装验证，并保存构建产物。维护者可手动运行发布工作流，为已存在的版本标签创建 GitHub Release 草稿；只有全部检查通过才会创建草稿。工作流是否通过以实际运行结果为准。当前产物在本地构建，尚未上传 PyPI 或其他公开下载服务；不要将裸命令 `uvx codex-image-generation` 视为已验证的安装入口。
 
 详见 [发布维护说明](docs/RELEASING.md) 和 [更新记录](CHANGELOG.md)。
 

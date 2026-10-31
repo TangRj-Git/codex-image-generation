@@ -45,7 +45,7 @@ def main() -> None:
         except ImageToolError as exc:
             print(str(exc), file=sys.stderr)
             raise SystemExit(1) from None
-        arguments = ["-m", "gpt_image_generation", "--codex-home", settings["codex_home"]]
+        arguments = ["-m", "codex_image_generation", "--codex-home", settings["codex_home"]]
         names = set(settings["required_env_vars"])
         names.discard("CODEX_HOME")
         if options.profile is not None:

@@ -11,13 +11,13 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from gpt_image_generation.cli import main
+from codex_image_generation.cli import main
 
 
 class CliTests(unittest.TestCase):
     def launch(self, args, env=None):
         with patch.dict(os.environ, env or {}, clear=True), patch(
-            "sys.argv", ["gpt-image-generation", *args]
+            "sys.argv", ["codex-image-generation", *args]
         ), contextlib.redirect_stdout(io.StringIO()) as output:
             main()
         return output.getvalue()
@@ -71,14 +71,14 @@ class CliTests(unittest.TestCase):
 
     def test_removed_model_flags_are_rejected(self):
         for flag in ("--responses-model", "--image-model"):
-            with self.subTest(flag=flag), patch("sys.argv", ["gpt-image-generation", flag, "fake"]), contextlib.redirect_stderr(io.StringIO()):
+            with self.subTest(flag=flag), patch("sys.argv", ["codex-image-generation", flag, "fake"]), contextlib.redirect_stderr(io.StringIO()):
                 with self.assertRaises(SystemExit) as error:
                     main()
                 self.assertEqual(error.exception.code, 2)
 
     def test_check_failure_is_json_and_nonzero(self):
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {}, clear=True), patch(
-            "sys.argv", ["gpt-image-generation", "--check", "--codex-home", directory]
+            "sys.argv", ["codex-image-generation", "--check", "--codex-home", directory]
         ), contextlib.redirect_stdout(io.StringIO()) as output:
             with self.assertRaises(SystemExit) as raised:
                 main()
@@ -107,7 +107,7 @@ class CliTests(unittest.TestCase):
             for mode in ("--print-config", "--check"):
                 with self.subTest(mode=mode):
                     result = subprocess.run(
-                        [sys.executable, "-B", "-m", "gpt_image_generation", mode, "--codex-home", str(home)],
+                        [sys.executable, "-B", "-m", "codex_image_generation", mode, "--codex-home", str(home)],
                         cwd=directory, env=env, capture_output=True, timeout=30,
                     )
                     self.assertEqual(result.returncode, 0, result.stderr.decode("utf-8"))
@@ -119,7 +119,7 @@ class CliTests(unittest.TestCase):
             self.assertTrue(json.loads(outputs["--check"])["configured"])
 
             script = (
-                "import sys; from gpt_image_generation.cli import main; "
+                "import sys; from codex_image_generation.cli import main; "
                 "sys.argv=['\\u56fe\\u7247\\U0001f680', '--help']; main()"
             )
             result = subprocess.run(
@@ -133,7 +133,7 @@ class CliTests(unittest.TestCase):
             invalid.mkdir()
             (invalid / "config.toml").write_text("model = [", encoding="utf-8")
             result = subprocess.run(
-                [sys.executable, "-B", "-m", "gpt_image_generation", "--print-config", "--codex-home", str(invalid)],
+                [sys.executable, "-B", "-m", "codex_image_generation", "--print-config", "--codex-home", str(invalid)],
                 cwd=directory, env=env, capture_output=True, timeout=30,
             )
             self.assertEqual(result.returncode, 1)

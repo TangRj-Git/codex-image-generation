@@ -5,7 +5,7 @@
 # macOS/Linux 例如 /home/user/tools/package.whl；TOML 不会展开 ~ 或 $HOME。
 [mcp_servers.image_generation]
 command = "uv"
-args = ["tool", "run", "--python", "3.11", "--from", "/absolute/path/to/gpt_image_generation-0.3.0-py3-none-any.whl", "gpt-image-generation"]
+args = ["tool", "run", "--python", "3.11", "--from", "/absolute/path/to/codex_image_generation-0.3.0-py3-none-any.whl", "codex-image-generation"]
 startup_timeout_sec = 120
 tool_timeout_sec = 360
 

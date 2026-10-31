@@ -8,8 +8,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from gpt_image_generation.config import get_launch_settings, resolve_config
-from gpt_image_generation.errors import ImageToolError
+from codex_image_generation.config import get_launch_settings, resolve_config
+from codex_image_generation.errors import ImageToolError
 
 
 class ConfigTests(unittest.TestCase):

@@ -14,8 +14,8 @@ from fastmcp import Client
 from fastmcp.client.transports import StdioTransport
 from PIL import Image
 
-from gpt_image_generation.errors import ImageToolError
-from gpt_image_generation.server import _preview, configuration_status, mcp
+from codex_image_generation.errors import ImageToolError
+from codex_image_generation.server import _preview, configuration_status, mcp
 
 
 def png(width=32, height=24):
@@ -61,9 +61,9 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_preview_paths_and_ids_have_text_fallback(self):
         with tempfile.TemporaryDirectory() as directory, patch(
-            "gpt_image_generation.server.resolve_config", return_value=config()
+            "codex_image_generation.server.resolve_config", return_value=config()
         ) as resolver, patch(
-            "gpt_image_generation.server.generate", new_callable=AsyncMock,
+            "codex_image_generation.server.generate", new_callable=AsyncMock,
             return_value=result(directory, warnings=["test-warning"]),
         ):
             async with Client(mcp) as client:
@@ -82,9 +82,9 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
     async def test_invalid_compression_never_reaches_config_or_api(self):
         for value in (True, "50", 80.0, -1, 101):
             with self.subTest(value=value), patch(
-                "gpt_image_generation.server.resolve_config"
+                "codex_image_generation.server.resolve_config"
             ) as resolver, patch(
-                "gpt_image_generation.server.generate", new_callable=AsyncMock
+                "codex_image_generation.server.generate", new_callable=AsyncMock
             ) as generator:
                 async with Client(mcp) as client:
                     response = await client.call_tool_mcp("generate_image", {
@@ -96,7 +96,7 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_invalid_source_is_rejected(self):
         for source in ({}, {"path": "a.png", "file_id": "file_other"}, {"file_id": "file_a", "extra": "x"}):
-            with self.subTest(source=source), patch("gpt_image_generation.server.generate") as generator:
+            with self.subTest(source=source), patch("codex_image_generation.server.generate") as generator:
                 async with Client(mcp) as client:
                     response = await client.call_tool_mcp("generate_image", {
                         "prompt": "Edit", "cwd": str(Path.cwd()), "input_images": [source],
@@ -106,9 +106,9 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_sources_are_forwarded_without_model_settings(self):
         with tempfile.TemporaryDirectory() as directory, patch(
-            "gpt_image_generation.server.resolve_config", return_value=config("config")
+            "codex_image_generation.server.resolve_config", return_value=config("config")
         ), patch(
-            "gpt_image_generation.server.generate", new_callable=AsyncMock, return_value=result(directory)
+            "codex_image_generation.server.generate", new_callable=AsyncMock, return_value=result(directory)
         ) as generator:
             async with Client(mcp) as client:
                 response = await client.call_tool_mcp("generate_image", {
@@ -124,9 +124,9 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_partial_success_is_not_marked_as_total_failure(self):
         with tempfile.TemporaryDirectory() as directory, patch(
-            "gpt_image_generation.server.resolve_config", return_value=config()
+            "codex_image_generation.server.resolve_config", return_value=config()
         ), patch(
-            "gpt_image_generation.server.generate", new_callable=AsyncMock,
+            "codex_image_generation.server.generate", new_callable=AsyncMock,
             return_value=result(directory, status="partial_success", errors=[{"code": "failed_item", "message": "One failed"}]),
         ):
             async with Client(mcp) as client:
@@ -136,8 +136,8 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("One failed", " ".join(item.text for item in response.content if item.type == "text"))
 
     async def test_total_failure_keeps_upstream_ids(self):
-        with patch("gpt_image_generation.server.resolve_config", return_value=config()), patch(
-            "gpt_image_generation.server.generate", new_callable=AsyncMock,
+        with patch("codex_image_generation.server.resolve_config", return_value=config()), patch(
+            "codex_image_generation.server.generate", new_callable=AsyncMock,
             return_value=result(".", images=[], status="error", errors=[{"code": "upstream", "message": "Failed"}]),
         ):
             async with Client(mcp) as client:
@@ -146,8 +146,8 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.structured_content["response_id"], "resp_test")
 
     async def test_internal_exception_does_not_leak_secrets(self):
-        with patch("gpt_image_generation.server.resolve_config", return_value=config()), patch(
-            "gpt_image_generation.server.generate", new_callable=AsyncMock,
+        with patch("codex_image_generation.server.resolve_config", return_value=config()), patch(
+            "codex_image_generation.server.generate", new_callable=AsyncMock,
             side_effect=RuntimeError("secret-should-not-leak"),
         ):
             async with Client(mcp) as client:
@@ -165,7 +165,7 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
             with (Path(directory) / "stderr.log").open("w", encoding="utf-8") as log:
                 transport = StdioTransport(
                     command=sys.executable,
-                    args=["-B", "-m", "gpt_image_generation", "--codex-home", directory],
+                    args=["-B", "-m", "codex_image_generation", "--codex-home", directory],
                     env={"PYTHONUTF8": "1", "CODEX_IMAGE_TIMEOUT": "1"},
                     cwd=str(Path(__file__).resolve().parents[1]), keep_alive=False, log_file=log,
                 )
@@ -181,7 +181,7 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
 
 class StatusTests(unittest.TestCase):
     def test_status_is_local_and_not_session_detection(self):
-        with patch("gpt_image_generation.server.resolve_config", return_value=config("config")) as resolver:
+        with patch("codex_image_generation.server.resolve_config", return_value=config("config")) as resolver:
             status = configuration_status()
         resolver.assert_called_once_with(require_model=False)
         self.assertTrue(status["configured"])
@@ -190,7 +190,7 @@ class StatusTests(unittest.TestCase):
         self.assertEqual(status["default_output_directory"], "<cwd>")
 
     def test_missing_configuration_returns_safe_diagnostic(self):
-        with patch("gpt_image_generation.server.resolve_config", side_effect=ImageToolError("Missing configuration")):
+        with patch("codex_image_generation.server.resolve_config", side_effect=ImageToolError("Missing configuration")):
             self.assertFalse(configuration_status()["configured"])
 
     def test_preview_is_bounded_without_mutating_original(self):

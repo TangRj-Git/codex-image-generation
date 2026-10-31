@@ -2,7 +2,7 @@
 import unittest
 from types import SimpleNamespace
 
-from gpt_image_generation.generator import MAX_TEXT_CHARS, _State
+from codex_image_generation.generator import MAX_TEXT_CHARS, _State
 
 
 class ResultRedactionTests(unittest.TestCase):

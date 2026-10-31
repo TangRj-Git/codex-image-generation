@@ -11,7 +11,7 @@ body:
     id: version
     attributes:
       label: 项目版本
-      description: 可通过 gpt-image-generation --version 获取。
+      description: 可通过 codex-image-generation --version 获取。
       placeholder: "0.3.0"
     validations:
       required: true

@@ -58,7 +58,7 @@ jobs:
               return subprocess.check_output(["git", "show", f"{sha}:{path}"]).decode("utf-8")
 
           version = tomllib.loads(source("pyproject.toml"))["project"]["version"]
-          module = ast.parse(source("src/gpt_image_generation/__init__.py"))
+          module = ast.parse(source("src/codex_image_generation/__init__.py"))
           versions = [
               ast.literal_eval(node.value)
               for node in module.body
@@ -128,9 +128,9 @@ jobs:
               raise SystemExit("Remote tag no longer points to the tested commit")
 
           expected = {
-              f"gpt_image_generation-{version}-py3-none-any.whl",
-              f"gpt_image_generation-{version}.tar.gz",
-              f"gpt-image-generation-{version}.zip",
+              f"codex_image_generation-{version}-py3-none-any.whl",
+              f"codex_image_generation-{version}.tar.gz",
+              f"codex-image-generation-{version}.zip",
           }
           checksums = Path("dist") / f"SHA256SUMS-{version}.txt"
           seen = set()

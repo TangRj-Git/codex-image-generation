@@ -14,9 +14,9 @@ from unittest.mock import patch
 
 from PIL import Image
 
-from gpt_image_generation import storage
-from gpt_image_generation.errors import ImageToolError
-from gpt_image_generation.storage import (
+from codex_image_generation import storage
+from codex_image_generation.errors import ImageToolError
+from codex_image_generation.storage import (
     GeneratedImage, ImageInfo, PreparedImage, SaveResult, inspect_image, prepare_save,
     read_input_image, resolve_cwd, resolve_format, resolve_project, save_images,
 )
@@ -164,7 +164,7 @@ class StorageTests(unittest.TestCase):
         self.plan(filename="asset.png")
         script = (
             "import importlib.util,sys;"
-            "spec=importlib.util.spec_from_file_location('gpt_image_generation.storage',sys.argv[1]);"
+            "spec=importlib.util.spec_from_file_location('codex_image_generation.storage',sys.argv[1]);"
             "module=importlib.util.module_from_spec(spec);"
             "sys.modules[spec.name]=module;spec.loader.exec_module(module)\n"
             "try:\n"

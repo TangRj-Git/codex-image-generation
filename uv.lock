@@ -246,6 +246,23 @@ wheels = [
 ]
 
 [[package]]
+name = "codex-image-generation"
+version = "0.3.0"
+source = { editable = "." }
+dependencies = [
+    { name = "fastmcp" },
+    { name = "openai" },
+    { name = "pillow" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "fastmcp", specifier = ">=4.1.4,<5" },
+    { name = "openai", specifier = ">=3.42.0,<4" },
+    { name = "pillow", specifier = ">=11.3,<14" },
+]
+
+[[package]]
 name = "cryptography"
 version = "50.0.2"
 source = { registry = "https://pypi.org/simple" }
@@ -437,23 +454,6 @@ server = [
     { name = "uvicorn" },
     { name = "watchfiles" },
     { name = "websockets" },
-]
-
-[[package]]
-name = "gpt-image-generation"
-version = "0.3.0"
-source = { editable = "." }
-dependencies = [
-    { name = "fastmcp" },
-    { name = "openai" },
-    { name = "pillow" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "fastmcp", specifier = ">=4.1.4,<5" },
-    { name = "openai", specifier = ">=3.42.0,<4" },
-    { name = "pillow", specifier = ">=11.3,<14" },
 ]
 
 [[package]]

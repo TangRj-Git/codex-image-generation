@@ -1,5 +1,5 @@
 [project]
-name = "gpt-image-generation"
+name = "codex-image-generation"
 version = "0.3.0"
 description = "A local Codex MCP server for Responses image generation using existing provider credentials"
 readme = "README.md"
@@ -26,14 +26,14 @@ dependencies = [
 ]
 
 [project.scripts]
-gpt-image-generation = "gpt_image_generation:main"
+codex-image-generation = "codex_image_generation:main"
 
 [build-system]
 requires = ["uv_build>=0.12.23,<0.13.0"]
 build-backend = "uv_build"
 
 [tool.uv.build-backend]
-module-name = "gpt_image_generation"
+module-name = "codex_image_generation"
 module-root = "src"
 source-include = [
     "CHANGELOG.md",

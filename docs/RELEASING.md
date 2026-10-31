@@ -4,7 +4,7 @@
 
 ## 版本与检查
 
-同步更新 `pyproject.toml` 的 `project.version`、`src/gpt_image_generation/__init__.py` 的 `__version__`、`CHANGELOG.md` 及安装示例中的文件名。然后在项目根目录执行：
+同步更新 `pyproject.toml` 的 `project.version`、`src/codex_image_generation/__init__.py` 的 `__version__`、`CHANGELOG.md` 及安装示例中的文件名。然后在项目根目录执行：
 
 ```sh
 uv lock
@@ -25,9 +25,9 @@ uv run --frozen python scripts/build_release.py
 
 0.3.0 的主要产物：
 
-- `gpt_image_generation-0.3.0-py3-none-any.whl`：供使用者安装。
-- `gpt_image_generation-0.3.0.tar.gz`：源码发行包。
-- `gpt-image-generation-0.3.0.zip`：便于分享的下载包，含 wheel、源码包、安装说明、MIT 许可证、MCP 配置示例和内部校验和。
+- `codex_image_generation-0.3.0-py3-none-any.whl`：供使用者安装。
+- `codex_image_generation-0.3.0.tar.gz`：源码发行包。
+- `codex-image-generation-0.3.0.zip`：便于分享的下载包，含 wheel、源码包、安装说明、MIT 许可证、MCP 配置示例和内部校验和。
 - `SHA256SUMS-0.3.0.txt`：外部 SHA-256 校验文件，校验 wheel、源码包和 ZIP。
 
 `py3-none-any` 表示本项目 wheel 没有平台专用二进制扩展，不表示全部依赖支持任意操作系统。uv 会为使用者的平台安装相应依赖。
@@ -39,7 +39,7 @@ uv run --frozen python scripts/build_release.py
 ## 安装后验证
 
 ```sh
-uv run --frozen python scripts/smoke_wheel.py --wheel dist/gpt_image_generation-0.3.0-py3-none-any.whl
+uv run --frozen python scripts/smoke_wheel.py --wheel dist/codex_image_generation-0.3.0-py3-none-any.whl
 ```
 
 该脚本在临时隔离的 uv 工具目录安装 wheel，使用假 Codex 配置，从与源码无关的工作目录验证：

@@ -2,6 +2,7 @@
 
 ## 0.3.0 — 2026-11-01
 
+- 项目、发行包和启动命令统一命名为 `codex-image-generation`，Python 模块使用 `codex_image_generation`。
 - 作者署名更新为 TangRuoJie，采用 MIT 许可证，并在分发包中包含许可证。
 - 增加贡献指南、安全报告渠道、问题/PR 模板，以及通过检查后创建 Release 草稿的手动工作流。
 - 提供 wheel、源码包及带安装说明和校验和的 ZIP 本地发布流程。

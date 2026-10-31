@@ -1,4 +1,4 @@
-"""Run with ``python -m gpt_image_generation``."""
+"""Run with ``python -m codex_image_generation``."""
 
 from .cli import main
 

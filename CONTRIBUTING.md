@@ -28,7 +28,7 @@ uv run --locked python -B -m unittest discover -s tests -v
 
 ```sh
 uv run --locked python scripts/build_release.py
-uv run --locked python scripts/smoke_wheel.py --wheel dist/gpt_image_generation-0.3.0-py3-none-any.whl
+uv run --locked python scripts/smoke_wheel.py --wheel dist/codex_image_generation-0.3.0-py3-none-any.whl
 git diff --check
 ```
 

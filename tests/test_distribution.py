@@ -25,8 +25,8 @@ def load_script(name):
 
 release = load_script("build_release")
 smoke = load_script("smoke_wheel")
-NAME = "gpt-image-generation"
-MODULE = "gpt_image_generation"
+NAME = "codex-image-generation"
+MODULE = "codex_image_generation"
 VERSION = "0.3.0"
 DIST_INFO = f"{MODULE}-{VERSION}.dist-info"
 METADATA = f"Metadata-Version: 2.4\nName: {NAME}\nVersion: {VERSION}\nLicense-Expression: MIT\nLicense-File: LICENSE\n".encode()
@@ -40,7 +40,7 @@ def make_wheel(directory: Path, extra=None, *, omit=()) -> Path:
         f"{MODULE}/__main__.py": b"# fixture\n",
         f"{DIST_INFO}/METADATA": METADATA,
         f"{DIST_INFO}/WHEEL": b"Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
-        f"{DIST_INFO}/entry_points.txt": b"[console_scripts]\ngpt-image-generation = gpt_image_generation:main\n",
+        f"{DIST_INFO}/entry_points.txt": b"[console_scripts]\ncodex-image-generation = codex_image_generation:main\n",
         f"{DIST_INFO}/RECORD": b"",
         f"{DIST_INFO}/licenses/LICENSE": LICENSE,
     }
@@ -130,7 +130,7 @@ class DistributionTests(unittest.TestCase):
             for name in ("auth.json", ".env", "sunny-anime-puppy.png", f"{MODULE}/secret.png"):
                 with self.subTest(wheel=name), self.assertRaises(ValueError):
                     release.validate_wheel(make_wheel(root, {name: b"local-only"}), NAME, MODULE, VERSION)
-            for name in ("auth.json", ".codex/config.toml", ".env", "private-generation.png", "outputs/image.png", "src/gpt_image_generation/config.toml"):
+            for name in ("auth.json", ".codex/config.toml", ".env", "private-generation.png", "outputs/image.png", "src/codex_image_generation/config.toml"):
                 with self.subTest(sdist=name), self.assertRaises(ValueError):
                     release.validate_sdist(make_sdist(root, {name: b"local-only"}), NAME, MODULE, VERSION)
 
