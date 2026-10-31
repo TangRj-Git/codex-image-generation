@@ -2,17 +2,39 @@
 
 安装一次后，可在任意项目中使用。MCP 复用使用者自己的 Codex 中转站配置；分发包不包含作者的 URL、API Key 或模型设置。
 
+## 获取正确的安装包
+
+当前可由维护者直接发送 `gpt-image-generation-0.3.0.zip`；以后公开 Release 后，在该版本的附件中下载同名 ZIP。GitHub 自动生成的 `Source code.zip` / `Source code.tar.gz` 是源码归档，不是本指南推荐的安装分发包。
+
+解压后应能看到 `gpt_image_generation-0.3.0-py3-none-any.whl`、`INSTALL.md`、`LICENSE`、配置示例、源码包和 `SHA256SUMS`。正常使用只需安装 wheel 并接入 Codex，不需要解压源码包，也不用把这些文件放进每个项目。
+
+第一次使用的顺序是：**准备 uv 和已有 Codex 中转站配置 → 安装 wheel → 检查配置 → 生成并保存 MCP 配置 → 重启 Codex → 实际生成一张图片**。
+
 ## 准备条件
 
 - 安装 [uv](https://docs.astral.sh/uv/getting-started/installation/)。下文用 uv 建立独立的 Python 工具环境，不需要手动激活虚拟环境。
 - 已有可用的 Codex 中转站配置，包括 URL、认证方式和模型。中转站须支持 Responses API 的 `image_generation` 工具。
 - 安装时需要联网下载 Python（如果本机没有指定版本）和依赖；图片生成时需要访问中转站。
 
+安装 uv 后执行 `uv --version` 确认命令可用。无需另行安装 FastMCP、OpenAI SDK 或 Pillow，安装 wheel 时会自动处理这些依赖。
+
 安装包是 Python 包，不是免运行时的独立可执行文件，也不是离线依赖合集。建议使用 Python 3.11；包元数据允许 3.11 及以上版本，更高版本仍受依赖兼容性约束。
 
 ## 推荐：安装到独立工具环境
 
 下载并解压 `gpt-image-generation-0.3.0.zip`，找到 `gpt_image_generation-0.3.0-py3-none-any.whl`。也可以直接取得这个 wheel 文件。
+
+最直接的方法是在包含 wheel 的解压目录打开终端：
+
+```sh
+uv tool install --python 3.11 ./gpt_image_generation-0.3.0-py3-none-any.whl
+gpt-image-generation --version
+gpt-image-generation --check
+```
+
+版本应显示 `0.3.0`，检查结果应包含 `configured: true`。`connection_verified: false` 是正常结果，含义见后文。检查失败时先修正现有 Codex 配置，再继续接入。
+
+也可以从其他目录安装，使用下面的绝对路径示例；路径应指向实际解压出来的 wheel，不能直接指向 ZIP。
 
 Windows PowerShell 示例，路径替换为自己的下载位置：
 
@@ -47,7 +69,7 @@ gpt-image-generation --print-config
 
 ## 加入自己的 Codex 配置
 
-将 `--print-config` 输出的整个 `[mcp_servers.image_generation]` 表加入 Codex 用户配置。如果已有同名表，应替换该表，不要重复添加。
+本地检查通过后运行 `gpt-image-generation --print-config`，将输出的整个 `[mcp_servers.image_generation]` 表加入 Codex 用户配置并保存。此命令只打印配置，不自动修改文件。如果已有同名表，应替换该表，不要重复添加；保留原有的模型和 provider 设置。
 
 默认配置文件位置：
 
@@ -69,11 +91,15 @@ gpt-image-generation --codex-home /absolute/path/to/codex-home --profile work --
 
 配置中的 `env_vars` 是转发给 MCP 的环境变量名，不包含变量值。如果已有 provider 通过 `env_key` 或 `env_http_headers` 引用环境变量，启动 Codex 的进程也必须能读取这些变量。仅在另一个终端临时设置变量，不一定能传给已启动的桌面应用；设置后重新启动 Codex。不要把 API Key 复制进示例文件。
 
-重新加载 MCP 或重新启动 Codex，然后在项目中说：
+保存配置后重启 Codex，打开需要保存图片的项目。确认 `image_generation` MCP 已加载且包含 `generate_image` 工具。首次验证建议明确指定工具：
 
-> 给我生成一只阳光、动漫风格、可爱的小狗，保存在当前项目中。
+> 请使用 image_generation MCP，生成一只阳光、动漫风格、可爱的小狗，保存在当前项目中。
 
 Codex 应调用 `generate_image` 并传入当前任务的绝对 `cwd`；不指定目标目录时，原图直接保存在这个目录。需要指定位置时，可以说“保存到当前项目的 `assets/puppy.webp`”。
+
+完成验证的标准是：Codex 返回保存路径，且能在该路径找到可打开的图片。此后直接自然语言提出生成需求即可，不用每次写工具参数或重新配置 URL、Key、模型。
+
+Codex 会根据保存的 MCP 配置启动服务，不需要使用者手动保持一个服务终端。若直接运行不带参数的 `gpt-image-generation`，它会进入 stdio 模式等待客户端消息，看起来没有输出是正常的；终端诊断请使用 `--version`、`--check` 或 `--print-config`。
 
 ## 诊断命令的含义
 
@@ -85,6 +111,22 @@ Codex 应调用 `generate_image` 并传入当前任务的绝对 `cwd`；不指�
 - `session_model_auto_detection: false` 表示普通 MCP 无法自行确认 Codex 界面的临时模型选择。
 
 真正生成图片会调用中转站，可能产生费用。超时或断流后先检查结果和中转站记录，不要自动连续重试。
+
+## 常见问题
+
+| 现象 | 处理方法 |
+| --- | --- |
+| 找不到 `uv` | 按官方安装说明安装 uv，重新打开终端，再运行 `uv --version`。 |
+| 找不到 `gpt-image-generation` | 确认 wheel 安装成功，执行 `uv tool update-shell`，按提示重新打开终端。 |
+| 安装时提示 wheel 文件不存在 | 确认 ZIP 已解压，在包含 `.whl` 的目录运行相对路径命令，或改用真实绝对路径。 |
+| `--check` 返回 `configured: false` | 根据错误检查原有 Codex 配置位置、所选 provider、认证来源；自定义位置/profile 时使用对应启动参数。 |
+| 检查结果为 `connection_verified: false` | 这是本地诊断的预期结果；实际生成图片才会验证上游连接和工具支持。 |
+| 终端检查通过，Codex 中却缺少认证环境变量 | `env_vars` 只转发变量名；让启动 Codex 的环境能读取这些变量，并重启 Codex。 |
+| Codex 找不到这个 MCP 或工具 | 确认已把完整配置块保存到正确的 `config.toml`，没有重复同名表，配置中的 Python 路径仍存在，然后重启 Codex。 |
+| MCP 能启动，但生成时上游报错 | 核对中转站对 Responses、`image_generation` 和所选对话模型的支持，以及具体参数限制；仅能聊天不代表能出图。 |
+| 切换了界面模型，返回的模型仍来自配置 | 普通 MCP 无法自行确认临时模型选择；可靠调用上下文未传入 `current_model` 时会使用配置中的模型。 |
+
+反馈问题时仅提供脱敏后的相关错误片段，不要发送 API Key、完整 Codex 配置或私人图片。
 
 ## 可选：通过本地 wheel 启动
 

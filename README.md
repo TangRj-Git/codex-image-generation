@@ -20,28 +20,42 @@ Codex 调用 `generate_image`，工具复用用户已有的 Codex URL、API Key 
 
 当前版本：**0.3.0**。分发包为 `gpt-image-generation-0.3.0.zip`，内含 wheel、源码包、安装说明、许可证、配置示例和 SHA-256 校验清单。这是 Python 安装包，需要 [uv](https://docs.astral.sh/uv/getting-started/installation/)；首次安装需要联网下载 Python（如果缺少）和依赖。
 
-解压后，在解压目录的终端执行。下面的命令适用于 Windows PowerShell、macOS 和 Linux：
+分享给别人时，发送 `dist/gpt-image-generation-0.3.0.zip` 即可，对方按照包内 `INSTALL.md` 操作。以后公开 Release 后，下载其中的同名附件；GitHub 自动提供的 `Source code.zip` 是源码归档，不是这个安装分发包。
+
+**第 1 步：准备自己的环境。** 对方需要已安装 Codex、已有可用的中转站配置，并安装 uv。执行 `uv --version` 确认命令可用。URL、API Key 和模型复用对方自己的 Codex 配置，不需要复制作者的配置。
+
+**第 2 步：安装并检查。** 解压 ZIP，在包含 `.whl` 文件的解压目录打开终端。下面的命令适用于 Windows PowerShell、macOS 和 Linux：
 
 ~~~sh
 uv tool install --python 3.11 ./gpt_image_generation-0.3.0-py3-none-any.whl
+gpt-image-generation --version
 gpt-image-generation --check
+~~~
+
+如果系统找不到 `gpt-image-generation`，执行 `uv tool update-shell` 后重新打开终端。版本应显示 `0.3.0`，检查结果应包含 `configured: true`；`connection_verified: false` 是正常的，因为此命令只检查本地配置，不请求中转站。检查失败时，先按 [安装说明中的故障排查](docs/INSTALL.md#常见问题) 修正现有配置。
+
+**第 3 步：生成接入配置。** 执行：
+
+~~~sh
 gpt-image-generation --print-config
 ~~~
 
-如果系统找不到 `gpt-image-generation`，执行 `uv tool update-shell` 后重新打开终端。
-
-将最后一条命令输出的 TOML 配置加入**自己电脑**的 Codex 用户配置文件：
+**第 4 步：保存配置。** 将上一步输出的整个 `[mcp_servers.image_generation]` TOML 配置块加入**自己电脑**的 Codex 用户配置文件并保存。这条命令只打印内容，不会自动完成接入。
 
 | 系统 | 默认配置文件 |
 | --- | --- |
 | Windows | `%USERPROFILE%\.codex\config.toml` |
 | macOS / Linux | `~/.codex/config.toml` |
 
-设置过 `CODEX_HOME` 时使用该目录下的 `config.toml`。已有同名 `[mcp_servers.image_generation]` 时替换该节，避免重复。重新加载 MCP 或开启新会话后即可使用。
+设置过 `CODEX_HOME` 时使用该目录下的 `config.toml`。已有同名 `[mcp_servers.image_generation]` 时替换该节，避免重复。保留已有的模型和 provider 设置。若认证依赖环境变量，启动 Codex 的环境也必须能读取这些变量。
+
+**第 5 步：重启 Codex 并验证。** 保存配置后重启 Codex，打开需要保存图片的项目，确认 MCP 已加载且包含 `generate_image` 工具。首次测试可以明确说：
+
+> 请使用 image_generation MCP，生成一只阳光、动漫风格的可爱小狗，保存在当前项目中。
+
+成功时应收到原图路径，并能在当前项目目录找到图片；仅安装成功或 `--check` 通过不代表已经验证上游出图能力。之后日常直接描述图片和保存位置即可，Codex 会按配置启动服务，无需每次安装或手动常驻一个终端。
 
 安装过程不会自动修改 Codex 配置。生成的接入配置使用安装环境中 Python 的绝对路径，不依赖项目源码目录或下载目录；常规安装完成后可以删除解压文件。包内不包含发布者的 URL、API Key 或 Codex 配置。
-
-`--check` 只检查本地配置，不发起上游请求。检查通过表示配置能被解析；实际图像能力还取决于中转站。
 
 完整的安装、升级、卸载、离线限制和故障排查见 [安装说明](docs/INSTALL.md)。也提供 [本地 wheel 的 uv 启动配置](examples/codex-uvx.toml)，采用该方式时需要保留 wheel。
 
