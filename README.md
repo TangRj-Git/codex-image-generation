@@ -16,11 +16,39 @@ Codex 调用 `generate_image`，工具复用用户已有的 Codex URL、API Key 
 
 ![阳光下坐在草地上的动漫风格可爱小狗](sunny-anime-puppy.png)
 
+## 通过 PyPI / uvx 接入（推荐）
+
+包已发布到 [PyPI](https://pypi.org/project/codex-image-generation/)。安装 [uv](https://docs.astral.sh/uv/getting-started/installation/) 后，可直接按包名运行，无需下载源码或 wheel：
+
+~~~sh
+uvx codex-image-generation --version
+uvx --python 3.11 codex-image-generation@0.3.0 --check
+~~~
+
+`--version` 应输出 `0.3.0`。`--check` 只检查本机已有的 Codex 配置，不调用图像 API；`connection_verified: false` 是正常结果。
+
+将下面配置加入自己的 Codex `config.toml`，保存并重启 Codex。已有同名 MCP 表时替换该表：
+
+~~~toml
+[mcp_servers.image_generation]
+command = "uvx"
+args = ["--python", "3.11", "codex-image-generation@0.3.0"]
+startup_timeout_sec = 120
+tool_timeout_sec = 360
+env_vars = []
+~~~
+
+如果已有 provider 通过环境变量读取认证信息，把所需变量**名称**加入 `env_vars`；自定义 `CODEX_HOME`、`CODEX_IMAGE_PROFILE` 或 `CODEX_IMAGE_TIMEOUT` 时也按需加入。启动 Codex 的进程必须能读取这些变量。中转站仍需支持 Responses API 的 `image_generation` 工具。
+
+首次运行会联网下载 Python（如缺少）和依赖，建议先在终端完成上面的检查。Codex 找不到 `uvx` 时，将 `command` 改为本机 `uvx` 的绝对路径。完整示例见 [PyPI MCP 配置](examples/codex-pypi.toml)。
+
+直接运行 `uvx codex-image-generation` 会进入 MCP stdio 服务并等待客户端消息；日常由 Codex 按配置启动。通过 `uvx` 接入时保持 `command = "uvx"`，不要保存 `--print-config` 输出的缓存 Python 路径，避免清理缓存后配置失效。
+
 ## 下载包后安装
 
 当前版本：**0.3.0**。分发包为 `codex-image-generation-0.3.0.zip`，内含 wheel、源码包、安装说明、许可证、配置示例和 SHA-256 校验清单。这是 Python 安装包，需要 [uv](https://docs.astral.sh/uv/getting-started/installation/)；首次安装需要联网下载 Python（如果缺少）和依赖。
 
-分享给别人时，发送 `dist/codex-image-generation-0.3.0.zip` 即可，对方按照包内 `INSTALL.md` 操作。以后公开 Release 后，下载其中的同名附件；GitHub 自动提供的 `Source code.zip` 是源码归档，不是这个安装分发包。
+也可以在 [GitHub Release](https://github.com/TangRj-Git/codex-image-generation/releases/tag/v0.3.0) 下载同名 ZIP，按照包内 `INSTALL.md` 操作。GitHub 自动提供的 `Source code.zip` 是源码归档，不是这个安装分发包。
 
 **第 1 步：准备自己的环境。** 对方需要已安装 Codex、已有可用的中转站配置，并安装 uv。执行 `uv --version` 确认命令可用。URL、API Key 和模型复用对方自己的 Codex 配置，不需要复制作者的配置。
 
@@ -144,7 +172,7 @@ dist/
 
 构建脚本检查包内容，不纳入本地配置、凭据或虚拟环境。源码包包含 README 使用的展示图 `sunny-anime-puppy.png`，其他生成图片不纳入；wheel 不包含展示图。安装冒烟测试使用临时安装目录、假凭据和无网络图像请求，从其他工作目录验证 CLI 与 MCP；不会替换你的全局安装。
 
-仓库包含 Windows、Linux、macOS 的 CI 工作流，执行测试、打包和安装验证，并保存构建产物。维护者可手动运行发布工作流，为已存在的版本标签创建 GitHub Release 草稿；只有全部检查通过才会创建草稿。工作流是否通过以实际运行结果为准。当前产物在本地构建，尚未上传 PyPI 或其他公开下载服务；不要将裸命令 `uvx codex-image-generation` 视为已验证的安装入口。
+仓库包含 Windows、Linux、macOS 的 CI 工作流，执行测试、打包和安装验证，并保存构建产物。维护者可手动运行发布工作流，为已存在的版本标签创建 GitHub Release 草稿；只有全部检查通过才会创建草稿。独立的 **Publish to PyPI** 工作流会校验公开 Release 的原始安装包，通过 `uvx` 验证后使用 Trusted Publishing 上传。工作流是否通过以实际运行结果为准。
 
 详见 [发布维护说明](docs/RELEASING.md) 和 [更新记录](CHANGELOG.md)。
 
