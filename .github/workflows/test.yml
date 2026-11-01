@@ -78,6 +78,14 @@ jobs:
       - name: Test installed wheel outside source checkout
         shell: bash
         run: uv run --locked python scripts/smoke_wheel.py --wheel dist/*-py3-none-any.whl
+      - name: Test uvx outside source checkout
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ steps.package.outputs.version }}
+        run: |
+          uv run --locked python -B scripts/smoke_uvx.py \
+            --package "dist/codex_image_generation-${RELEASE_VERSION}-py3-none-any.whl" \
+            --expected-version "$RELEASE_VERSION"
       - name: Keep tested distributions
         uses: actions/upload-artifact@v4
         with:

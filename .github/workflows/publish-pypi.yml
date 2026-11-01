@@ -1,0 +1,148 @@
+name: Publish to PyPI
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Published GitHub Release tag to upload to PyPI
+        required: true
+        default: v0.3.0
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pypi-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.12.23"
+          python-version: "3.11"
+      - name: Download and verify the published GitHub distributions
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          uv run --no-project --python 3.11 python - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import shutil
+          import subprocess
+          import sys
+
+          sys.path.insert(0, "scripts")
+          from build_release import validate_sdist, validate_wheel
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          tag = os.environ["RELEASE_TAG"]
+          if not re.fullmatch(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", tag):
+              raise SystemExit("Expected a stable release tag vX.Y.Z")
+          version = tag[1:]
+
+          def api(path):
+              return json.loads(subprocess.check_output(["gh", "api", path]))
+
+          release = api(f"repos/{repo}/releases/tags/{tag}")
+          if release["draft"] or release["prerelease"] or release["tag_name"] != tag:
+              raise SystemExit("Publish a stable GitHub Release first")
+          target = api(f"repos/{repo}/git/ref/tags/{tag}")["object"]
+          for _ in range(16):
+              if target["type"] != "tag":
+                  break
+              target = api(f"repos/{repo}/git/tags/{target['sha']}")["object"]
+          if target["type"] != "commit":
+              raise SystemExit("Release tag does not resolve to a commit")
+          runs = api(f"repos/{repo}/actions/workflows/test.yml/runs?head_sha={target['sha']}&per_page=100")
+          if not any(run["conclusion"] == "success" and run["head_sha"] == target["sha"] for run in runs["workflow_runs"]):
+              raise SystemExit("The release commit needs a successful Test and package run")
+
+          wheel_name = f"codex_image_generation-{version}-py3-none-any.whl"
+          sdist_name = f"codex_image_generation-{version}.tar.gz"
+          checksum_name = f"SHA256SUMS-{version}.txt"
+          expected = {wheel_name, sdist_name, f"codex-image-generation-{version}.zip"}
+          assets = {asset["name"]: asset for asset in release["assets"]}
+          if not expected.union({checksum_name}) <= assets.keys():
+              raise SystemExit("GitHub Release attachments are incomplete")
+          downloads = Path("dist/release-download")
+          downloads.mkdir(parents=True)
+          subprocess.run([
+              "gh", "release", "download", tag, "--repo", repo, "--dir", str(downloads),
+              "--pattern", wheel_name, "--pattern", sdist_name, "--pattern", checksum_name,
+          ], check=True)
+          checksums = {}
+          for line in (downloads / checksum_name).read_text(encoding="utf-8").splitlines():
+              digest, name = line.split("  ", 1)
+              if name not in expected or name in checksums or not re.fullmatch(r"[0-9a-f]{64}", digest):
+                  raise SystemExit("Invalid release checksum manifest")
+              checksums[name] = digest
+          if checksums.keys() != expected:
+              raise SystemExit("Incomplete release checksum manifest")
+          for name in (wheel_name, sdist_name, checksum_name):
+              digest = hashlib.sha256((downloads / name).read_bytes()).hexdigest()
+              if assets[name].get("digest") != "sha256:" + digest:
+                  raise SystemExit(f"GitHub asset checksum mismatch: {name}")
+              if name in checksums and checksums[name] != digest:
+                  raise SystemExit(f"Release checksum mismatch: {name}")
+          validate_wheel(downloads / wheel_name, "codex-image-generation", "codex_image_generation", version)
+          validate_sdist(downloads / sdist_name, "codex-image-generation", "codex_image_generation", version)
+          output = Path("dist/pypi")
+          output.mkdir()
+          for name in (wheel_name, sdist_name):
+              shutil.copyfile(downloads / name, output / name)
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as handle:
+              handle.write(f"version={version}\n")
+          print(f"Verified original {tag} release files at {target['sha']}")
+          PY
+      - name: Check PyPI metadata
+        run: uvx --from twine twine check --strict dist/pypi/*
+      - name: Verify uvx with the exact wheel to be published
+        env:
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          uv sync --locked
+          uv run --locked python -B scripts/smoke_uvx.py \
+            --package "dist/pypi/codex_image_generation-${RELEASE_VERSION}-py3-none-any.whl" \
+            --expected-version "$RELEASE_VERSION"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pypi-distributions
+          path: dist/pypi/*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: pypi
+      url: https://pypi.org/project/codex-image-generation/${{ needs.prepare.outputs.version }}/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: pypi-distributions
+          path: dist
+      - name: Publish the verified files using Trusted Publishing
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # release/v1

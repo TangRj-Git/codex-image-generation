@@ -1,0 +1,13 @@
+# Requires this version to have been published to PyPI.
+# uvx comes with uv. Use an absolute uvx path if the desktop app cannot find it.
+# The MCP client starts the server; no separate service terminal is needed.
+[mcp_servers.image_generation]
+command = "uvx"
+args = ["--python", "3.11", "codex-image-generation@0.3.0"]
+startup_timeout_sec = 120
+tool_timeout_sec = 360
+
+# Forward the environment variable NAMES referenced by your existing provider.
+# Include CODEX_HOME / CODEX_IMAGE_PROFILE / CODEX_IMAGE_TIMEOUT when used.
+# Do not put API key values into this example.
+env_vars = []
