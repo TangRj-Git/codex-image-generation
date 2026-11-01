@@ -119,6 +119,15 @@ class DistributionTests(unittest.TestCase):
             files = release.validate_sdist(sdist, NAME, MODULE, VERSION)
             self.assertIn("pyproject.toml.orig", files)
 
+    def test_accepts_separate_pypi_readme_alongside_github_readme(self):
+        with tempfile.TemporaryDirectory() as directory:
+            sdist = make_sdist(Path(directory), {
+                "pyproject.toml": b'[project]\nreadme = {file = "README_PYPI.md", content-type = "text/markdown"}\n',
+                "README_PYPI.md": b"Package purpose and MCP configuration.\n",
+            })
+            files = release.validate_sdist(sdist, NAME, MODULE, VERSION)
+            self.assertTrue({"README.md", "README_PYPI.md"} <= set(files))
+
     def test_rejects_unsafe_paths_on_every_os(self):
         for name in ("/etc/config", "../auth.json", "a/../secret", "C:/auth.json", "a\\config", "a//config", "a/./config", ""):
             with self.subTest(name=name), self.assertRaises(ValueError):

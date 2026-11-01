@@ -2,7 +2,7 @@
 name = "codex-image-generation"
 version = "0.3.0"
 description = "A local Codex MCP server for Responses image generation using existing provider credentials"
-readme = "README.md"
+readme = { file = "README_PYPI.md", content-type = "text/markdown" }
 authors = [
     { name = "TangRuoJie", email = "3177065378@qq.com" }
 ]
@@ -36,6 +36,8 @@ build-backend = "uv_build"
 module-name = "codex_image_generation"
 module-root = "src"
 source-include = [
+    "README.md",
+    "README_PYPI.md",
     "CHANGELOG.md",
     "CONTRIBUTING.md",
     "SECURITY.md",

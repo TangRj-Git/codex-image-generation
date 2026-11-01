@@ -99,7 +99,7 @@ def validate_wheel(path: Path, name: str, module: str, version: str, *, expected
 def validate_sdist(path: Path, name: str, module: str, version: str, *, expected_license: bytes | None = None) -> list[str]:
     root = f"{module}-{version}"
     # uv may preserve the original TOML beside its normalized copy.
-    root_files = {"pyproject.toml", "pyproject.toml.orig", "README.md", "CHANGELOG.md", "CONTRIBUTING.md", "SECURITY.md", "LICENSE", "uv.lock", ".python-version", "PKG-INFO", "sunny-anime-puppy.png"}
+    root_files = {"pyproject.toml", "pyproject.toml.orig", "README.md", "README_PYPI.md", "CHANGELOG.md", "CONTRIBUTING.md", "SECURITY.md", "LICENSE", "uv.lock", ".python-version", "PKG-INFO", "sunny-anime-puppy.png"}
     allowed_dirs = {"src", f"src/{module}", "tests", "scripts", "docs", "examples"}
     seen: set[str] = set()
     files: list[str] = []

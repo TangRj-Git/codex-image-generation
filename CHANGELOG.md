@@ -5,6 +5,7 @@
 - 用户接入配置统一为 `uvx codex-image-generation@latest`，不固定包版本或 Python 版本。
 - 精简 README 和安装说明，移除重复的 wheel 下载、持久安装及旧路径配置步骤。
 - 同步更新配置示例、问题反馈和发布说明；README 使用可供 PyPI 展示的绝对图片与文档链接。
+- 分离 GitHub 与 PyPI 描述：GitHub 保留 `README.md`，PyPI 使用不含图片、聚焦用途与配置的 `README_PYPI.md`。
 
 ## 0.3.0 — 2026-11-01
 

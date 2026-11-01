@@ -24,6 +24,8 @@ uv run --locked python -B -m unittest discover -s tests -v
 
 工具接口和限制见 [工具参考](docs/TOOLS.md)。安装与打包行为变更应同步更新相应文档。
 
+GitHub 首页使用 `README.md`，PyPI 详细描述使用 `README_PYPI.md`。后者只保留用途、配置和使用说明，不添加图片；修改接入方式时同步两份文件及 `examples/` 中的配置。
+
 ## 打包相关改动
 
 ```sh

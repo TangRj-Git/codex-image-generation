@@ -15,6 +15,14 @@ git diff --check
 
 测试使用假凭据、临时图片和模拟上游，不产生实际图片生成费用。单元测试通过不等于真实中转站支持所有能力。
 
+## GitHub 与 PyPI 的说明文件
+
+- `README.md`：GitHub 项目首页，包含使用说明、效果展示和开发入口。
+- `README_PYPI.md`：PyPI 详细描述，只介绍用途、配置和使用，不展示图片。
+- `pyproject.toml` 的 `description`：PyPI 页面顶部的一句话简介。
+
+`pyproject.toml` 中的 `readme` 指向 `README_PYPI.md`，构建时将它的内容写入 wheel 和源码包元数据。两份说明可以分别维护，公共的配置片段仍需保持一致。源码包保留两份文件，确保从源码重新构建时继续使用 PyPI 专用描述。
+
 ## 生成发布文件
 
 ```sh
@@ -32,7 +40,7 @@ uv run --frozen python scripts/build_release.py
 
 `py3-none-any` 表示本项目 wheel 没有平台专用二进制扩展，不表示全部依赖支持任意操作系统。uv 会为使用者的平台安装相应依赖。
 
-包内容应只包含项目代码、必要元数据、分发文档和明确列入的展示图片。README 使用的 `sunny-anime-puppy.png` 随源码包分发，wheel 不包含展示图。构建验证会拒绝不在预期范围内的文件。不要将 `.venv`、`.git`、`.env`、真实 Codex 配置、密钥、其他本地生成图片或作者电脑的启动配置加入发布包。对生成包做检查，不要仅检查 Git 的跟踪文件。
+包内容应只包含项目代码、必要元数据、分发文档和明确列入的展示图片。GitHub README 使用的 `sunny-anime-puppy.png` 随源码包保留，wheel 不包含展示图；PyPI 长描述仅使用不含图片的 `README_PYPI.md`。构建验证会拒绝不在预期范围内的文件。不要将 `.venv`、`.git`、`.env`、真实 Codex 配置、密钥、其他本地生成图片或作者电脑的启动配置加入发布包。对生成包做检查，不要仅检查 Git 的跟踪文件。
 
 根目录 `LICENSE` 会进入源码包、wheel 的 `.dist-info/licenses/` 和 ZIP。构建会验证包元数据声明 `MIT`，并逐字节核对许可证与源码一致。更新许可文件或分发文档时，需要同时维护构建脚本的文件白名单。
 
@@ -62,7 +70,7 @@ uv run --frozen python scripts/smoke_wheel.py --wheel dist/codex_image_generatio
 
 提交改动并推送到 [GitHub 仓库](https://github.com/TangRj-Git/codex-image-generation)，检查 **Test and package** 的实际运行结果。确认准备公开的文件、Git 历史及构建产物不包含真实凭据、私人中转配置或未经授权的素材。
 
-`dist/` 保持 Git 忽略，分发包通过 Release 附件和 PyPI 提供。README 使用绝对图片和文档链接，以便在 PyPI 展示；新增包元数据链接时也应使用真实仓库地址。
+`dist/` 保持 Git 忽略，分发包通过 Release 附件和 PyPI 提供。`README_PYPI.md` 中的文档链接使用绝对 URL，避免 PyPI 将它们解析到错误的位置；新增包元数据链接时也应使用真实仓库地址。
 
 ## 创建版本 Release 草稿
 
@@ -99,7 +107,7 @@ PyPI 发布使用 `.github/workflows/publish-pypi.yml`（GitHub Actions 中显�
 
 准备好后，在 GitHub Actions 运行 **Publish to PyPI**，输入本次已公开的 Release 标签。工作流把验证与带有 `id-token: write` 权限的上传分为不同 job；上传 job 不运行项目代码。`pypi` 环境名称须与 PyPI 配置一致，可在 GitHub 仓库 Settings → Environments 中增加维护者审核规则。
 
-本流程复用原始 Release 附件，不重新打包或替换已经公开的同版本文件。PyPI 不允许用新文件覆盖已上传的同名版本文件；后续代码或包元数据修改应发布新版本。已发布安装包中的 README 和 PyPI 长描述不会随仓库文档修改而自动更新，新文档需要随新版本分发。
+本流程复用原始 Release 附件，不重新打包或替换已经公开的同版本文件。PyPI 不允许用新文件覆盖已上传的同名版本文件；后续代码或包元数据修改应发布新版本。推送 `README.md` 会更新 GitHub 首页；修改 `README_PYPI.md` 则需要构建并发布新版本，才会更新 PyPI 的描述。已发布版本的说明不会自动变化。
 
 上传成功后，先检查 `@latest` 的实际版本，再对本次发布的精确版本运行安装验证。以下 `0.3.0` 仅为校验命令示例，发布其他版本时应相应替换：
 
