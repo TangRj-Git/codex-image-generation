@@ -11,7 +11,7 @@ body:
     id: version
     attributes:
       label: 项目版本
-      description: 可通过 codex-image-generation --version 获取。
+      description: 可通过 uvx codex-image-generation@latest --version 获取；请注明是否在更新前复现。
       placeholder: "0.3.0"
     validations:
       required: true
@@ -19,8 +19,8 @@ body:
     id: environment
     attributes:
       label: 运行环境
-      description: 操作系统、CPU 架构、Python 版本，以及 wheel 或源码安装方式。
-      placeholder: "Windows 11 / x64 / Python 3.11 / uv tool install wheel"
+      description: 操作系统、CPU 架构、uv 版本，以及启动方式；如果手动指定了 Python 版本也请说明。
+      placeholder: "Windows 11 / x64 / uv 0.12.23 / uvx codex-image-generation@latest"
     validations:
       required: true
   - type: textarea

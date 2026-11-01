@@ -1,6 +1,6 @@
 # 工具与配置参考
 
-服务使用 stdio，唯一公开 MCP 工具是 `generate_image`。配置诊断由 CLI 的 `--check` 完成，不暴露额外的凭据读取工具。
+服务使用 stdio，唯一公开 MCP 工具是 `generate_image`。接入方式见 [uvx 安装说明](INSTALL.md)，本地配置诊断使用 `uvx codex-image-generation@latest --check`，不暴露额外的凭据读取工具。
 
 ## 调用原则
 

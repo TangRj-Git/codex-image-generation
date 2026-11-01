@@ -1,13 +1,12 @@
-# Requires this version to have been published to PyPI.
-# uvx comes with uv. Use an absolute uvx path if the desktop app cannot find it.
-# The MCP client starts the server; no separate service terminal is needed.
+# PyPI 启动配置，与 codex-uvx.toml 相同；保留此文件便于使用原有链接。
+# 安装 uv 后即可使用，不固定包版本或 Python 版本。
 [mcp_servers.image_generation]
 command = "uvx"
-args = ["--python", "3.11", "codex-image-generation@0.3.0"]
+args = ["codex-image-generation@latest"]
 startup_timeout_sec = 120
 tool_timeout_sec = 360
-
-# Forward the environment variable NAMES referenced by your existing provider.
-# Include CODEX_HOME / CODEX_IMAGE_PROFILE / CODEX_IMAGE_TIMEOUT when used.
-# Do not put API key values into this example.
 env_vars = []
+
+# 按需在 env_vars 中填写 provider 引用的变量名称，不填写密钥值。
+# 自定义 CODEX_HOME、CODEX_IMAGE_PROFILE、CODEX_IMAGE_TIMEOUT 时也需转发。
+# Codex 找不到 uvx 时，将 command 改为本机 uvx 的绝对路径。

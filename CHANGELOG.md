@@ -1,5 +1,11 @@
 # 更新记录
 
+## 未发布
+
+- 用户接入配置统一为 `uvx codex-image-generation@latest`，不固定包版本或 Python 版本。
+- 精简 README 和安装说明，移除重复的 wheel 下载、持久安装及旧路径配置步骤。
+- 同步更新配置示例、问题反馈和发布说明；README 使用可供 PyPI 展示的绝对图片与文档链接。
+
 ## 0.3.0 — 2026-11-01
 
 - 项目、发行包和启动命令统一命名为 `codex-image-generation`，Python 模块使用 `codex_image_generation`。
@@ -22,4 +28,4 @@
 - 支持 PNG/JPEG/WebP、参考图、蒙版、历史图像引用和可选流式中间预览。
 - 保留部分失败中的成功原图，输出路径、模型来源、ID、用量及警告。
 
-从旧版升级时，应使用新版 `--print-config` 重新生成接入配置。旧的 `--responses-model`、`--image-model` 等启动设置不再适用。
+从旧版升级时，按 [安装说明](docs/INSTALL.md#自动更新与旧配置迁移) 替换 MCP 配置。旧的 `--responses-model`、`--image-model` 等启动设置不再适用。

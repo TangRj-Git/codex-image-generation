@@ -1,10 +1,10 @@
 # 构建与开源发布
 
-本地构建生成可下载的 Python 包和 ZIP，不会上传或修改使用者的 Codex 配置。GitHub 发布工作流需要维护者手动触发，通过检查后创建 Release 草稿，由维护者检查后公开。
+本文供维护者构建和发布版本。用户接入统一使用 [uvx 配置](INSTALL.md)，不需要下载源码或手动安装 wheel。GitHub Release 与 PyPI 发布由各自的手动工作流完成。
 
 ## 版本与检查
 
-同步更新 `pyproject.toml` 的 `project.version`、`src/codex_image_generation/__init__.py` 的 `__version__`、`CHANGELOG.md` 及安装示例中的文件名。然后在项目根目录执行：
+发布新版本时，同步更新 `pyproject.toml` 的 `project.version`、`src/codex_image_generation/__init__.py` 的 `__version__` 和 `CHANGELOG.md`。下文校验命令中的版本应替换为待发布版本；面向用户的 `@latest` 配置无需修改。然后在项目根目录执行：
 
 ```sh
 uv lock
@@ -25,9 +25,9 @@ uv run --frozen python scripts/build_release.py
 
 0.3.0 的主要产物：
 
-- `codex_image_generation-0.3.0-py3-none-any.whl`：供使用者安装。
+- `codex_image_generation-0.3.0-py3-none-any.whl`：供 PyPI 分发的安装包。
 - `codex_image_generation-0.3.0.tar.gz`：源码发行包。
-- `codex-image-generation-0.3.0.zip`：便于分享的下载包，含 wheel、源码包、安装说明、MIT 许可证、MCP 配置示例和内部校验和。
+- `codex-image-generation-0.3.0.zip`：GitHub Release 归档，含 wheel、源码包、安装说明、MIT 许可证、MCP 配置示例和内部校验和。
 - `SHA256SUMS-0.3.0.txt`：外部 SHA-256 校验文件，校验 wheel、源码包和 ZIP。
 
 `py3-none-any` 表示本项目 wheel 没有平台专用二进制扩展，不表示全部依赖支持任意操作系统。uv 会为使用者的平台安装相应依赖。
@@ -58,20 +58,15 @@ uv run --frozen python scripts/smoke_wheel.py --wheel dist/codex_image_generatio
 
 凭据扫描使用 Gitleaks 默认规则，输出中的候选密钥会脱敏。`.gitleaks.toml` 只放行脱敏回归测试中的一个已确认伪凭据，要求文件路径和完整值同时匹配；不要扩大为整个测试目录或任意前缀。扫描是辅助检查，不是不存在泄漏的保证。
 
-## 首次关联公开仓库
+## 发布前确认
 
-项目维护者是 TangRuoJie，公开联系邮箱为 `3177065378@qq.com`，采用 [MIT 许可证](../LICENSE)。GitHub 账号与显示署名不一定相同，不应据此猜测仓库地址。
+提交改动并推送到 [GitHub 仓库](https://github.com/TangRj-Git/codex-image-generation)，检查 **Test and package** 的实际运行结果。确认准备公开的文件、Git 历史及构建产物不包含真实凭据、私人中转配置或未经授权的素材。
 
-1. 在自己的托管账号下创建仓库，确认实际仓库地址，再配置 Git 的 `origin`。
-2. 在 `pyproject.toml` 增加真实的 `[project.urls]`（Repository、Issues、Documentation），并更新 README 的 Release 下载入口。尚未确定地址时不填写虚构链接。
-3. 检查准备公开的文件及 Git 历史，确认无真实凭据、私人中转配置或未经授权的素材。提交完整改动后推送到仓库默认分支。
-4. 在 GitHub Actions 中检查 `Test and package` 的实际运行结果，确认支持的平台与文档一致。
-
-`dist/` 保持 Git 忽略，二进制分发包通过 Release 附件提供。项目使用 `.mailmap` 将此前 `Administrator` 与同一邮箱映射为 TangRuoJie，不需要重写历史提交。
+`dist/` 保持 Git 忽略，分发包通过 Release 附件和 PyPI 提供。README 使用绝对图片和文档链接，以便在 PyPI 展示；新增包元数据链接时也应使用真实仓库地址。
 
 ## 创建版本 Release 草稿
 
-确认版本文件、文档和待发布提交一致后，创建并推送版本标签。例如首次发布：
+确认版本文件、文档和待发布提交一致后，创建并推送对应版本标签。下面以 `v0.3.0` 展示命令格式；这个版本已经发布，实际操作请使用新的版本号：
 
 ```sh
 git tag -a v0.3.0 -m "Release v0.3.0"
@@ -84,9 +79,9 @@ git push origin v0.3.0
 
 最后检查草稿的版本说明与附件，确认后在 GitHub 上公开。该工作流不会自动发布公开 Release，也不会上传 PyPI；PyPI 采用下文独立的手动流程。远端 Actions 尚未运行前，不得把本地语法检查写成远端 CI 通过。
 
-## 分享与可选 PyPI 发布
+## 发布到 PyPI
 
-本地分发时，分享当前版本 ZIP 和对应外部校验和即可。收件人按照 ZIP 内 `INSTALL.md` 安装，再在自己的电脑上生成 Codex MCP 配置；无需取得作者的源码目录、密钥或 Codex 配置。
+用户配置见 `examples/codex-uvx.toml`，启动命令为 `uvx codex-image-generation@latest`，不固定包版本和 Python 版本。ZIP 保留作发行归档，其安装说明和配置示例也采用这一入口。
 
 PyPI 发布使用 `.github/workflows/publish-pypi.yml`（GitHub Actions 中显示为 **Publish to PyPI**），只在默认分支手动运行。它下载已经公开的 GitHub Release 原始 wheel 和源码包，核对 GitHub 提供的 SHA-256 与 Release 校验清单、包名、版本和许可证，确认标签提交有成功 CI，并验证 `uvx` 的 CLI 与 MCP stdio 后上传。ZIP 和校验清单保留在 GitHub Release，不上传到 PyPI。
 
@@ -102,17 +97,17 @@ PyPI 发布使用 `.github/workflows/publish-pypi.yml`（GitHub Actions 中显�
 
 该授权仅允许指定仓库、工作流和环境发布这个包，无需在仓库保存 PyPI API Token。第一次成功上传会创建项目，pending publisher 随后成为该项目的 publisher。配置 pending publisher 不会提前保留包名，最终以 PyPI 接受上传为准。
 
-准备好后，在 GitHub Actions 运行 **Publish to PyPI**，输入 `v0.3.0`（后续版本填写对应的已发布标签）。工作流把验证与带有 `id-token: write` 权限的上传分为不同 job；上传 job 不运行项目代码。`pypi` 环境名称须与 PyPI 配置一致，可在 GitHub 仓库 Settings → Environments 中增加维护者审核规则。
+准备好后，在 GitHub Actions 运行 **Publish to PyPI**，输入本次已公开的 Release 标签。工作流把验证与带有 `id-token: write` 权限的上传分为不同 job；上传 job 不运行项目代码。`pypi` 环境名称须与 PyPI 配置一致，可在 GitHub 仓库 Settings → Environments 中增加维护者审核规则。
 
-本流程复用原始 Release 附件，不重新打包或替换已经公开的同版本文件。PyPI 不允许用新文件覆盖已上传的同名版本文件；后续代码或包元数据修改应发布新版本。`0.3.0` 原始安装包中的 README 仍是当时的下载包说明，最新使用方式以仓库文档为准。下一次构建新版本时，应补全 `[project.urls]` 并将 PyPI 长描述中的相对图片和文档链接替换为实际仓库的绝对 URL。
+本流程复用原始 Release 附件，不重新打包或替换已经公开的同版本文件。PyPI 不允许用新文件覆盖已上传的同名版本文件；后续代码或包元数据修改应发布新版本。已发布安装包中的 README 和 PyPI 长描述不会随仓库文档修改而自动更新，新文档需要随新版本分发。
 
-上传成功后，从 PyPI 验证：
+上传成功后，先检查 `@latest` 的实际版本，再对本次发布的精确版本运行安装验证。以下 `0.3.0` 仅为校验命令示例，发布其他版本时应相应替换：
 
 ```sh
-uvx --refresh --python 3.11 codex-image-generation@0.3.0 --version
+uvx codex-image-generation@latest --version
 uv run --locked python -B scripts/smoke_uvx.py --package codex-image-generation==0.3.0 --expected-version 0.3.0
 ```
 
-第二条命令使用假凭据和临时配置，验证按包名启动后的 MCP 工具发现和本地参数校验，不调用真实图像 API。用户的固定版本接入配置见 `examples/codex-pypi.toml`。通过 `uvx` 启动时不要直接保存 `--print-config` 输出的缓存 Python 路径，应保留 `command = "uvx"` 的配置，以便清理缓存后自动重建环境。
+第二条命令使用假凭据和临时配置，验证指定版本的 MCP 工具发现和本地参数校验，不调用真实图像 API。发布测试使用精确版本，以确保验证的是待发布产物；这不改变用户配置中的 `@latest`。
 
 `uv.lock` 用于源码开发和项目测试；使用者直接安装 wheel 时，安装器按 wheel 中的依赖范围解析适合本机的版本。当前 ZIP 没有提供离线依赖集合，不能承诺在无网络的新机器上完成首次安装。

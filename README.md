@@ -1,191 +1,80 @@
 # Codex Image Generation MCP
 
-为使用中转站的 Codex 提供本地图像生成和编辑工具。安装后，直接告诉 Codex：
+为 Codex 提供图片生成与编辑工具，复用已有中转站的 URL、认证和模型配置。图片默认保存在当前项目，也可以指定目录、文件名和 PNG / JPEG / WebP 格式。
 
-> 生成一只阳光、动漫风格的可爱小狗，保存在当前项目中。
+[PyPI](https://pypi.org/project/codex-image-generation/) · [安装与故障排查](https://github.com/TangRj-Git/codex-image-generation/blob/master/docs/INSTALL.md) · [工具参考](https://github.com/TangRj-Git/codex-image-generation/blob/master/docs/TOOLS.md)
 
-Codex 调用 `generate_image`，工具复用用户已有的 Codex URL、API Key 和模型设置，保存原图并返回文件路径和预览。默认直接保存到当前任务目录，也可以指定文件夹、文件名和 PNG / JPEG / WebP 格式。
+## 快速接入
 
-无需另配图像模型；请求通过 Responses API 的 `image_generation` 工具完成，不发送 `tools[].model`。中转站必须支持这一接口，并允许所选对话模型调用图像工具。
+先安装 [uv](https://docs.astral.sh/uv/getting-started/installation/)，并准备好可用的 Codex 中转站配置。中转站需要支持 Responses API 的 `image_generation` 工具。
 
-本项目由 TangRuoJie 维护，采用 [MIT 许可证](LICENSE)，是独立社区项目，与 OpenAI 无隶属关系。
+将下面配置加入自己的 Codex `config.toml`，已有同名 MCP 表时替换该表：
 
-## 生成效果展示
-
-示例：阳光下、动漫风格的可爱小狗。
-
-![阳光下坐在草地上的动漫风格可爱小狗](sunny-anime-puppy.png)
-
-## 通过 PyPI / uvx 接入（推荐）
-
-包已发布到 [PyPI](https://pypi.org/project/codex-image-generation/)。安装 [uv](https://docs.astral.sh/uv/getting-started/installation/) 后，可直接按包名运行，无需下载源码或 wheel：
-
-~~~sh
-uvx codex-image-generation --version
-uvx --python 3.11 codex-image-generation@0.3.0 --check
-~~~
-
-`--version` 应输出 `0.3.0`。`--check` 只检查本机已有的 Codex 配置，不调用图像 API；`connection_verified: false` 是正常结果。
-
-将下面配置加入自己的 Codex `config.toml`，保存并重启 Codex。已有同名 MCP 表时替换该表：
-
-~~~toml
+```toml
 [mcp_servers.image_generation]
 command = "uvx"
-args = ["--python", "3.11", "codex-image-generation@0.3.0"]
+args = ["codex-image-generation@latest"]
 startup_timeout_sec = 120
 tool_timeout_sec = 360
 env_vars = []
-~~~
+```
 
-如果已有 provider 通过环境变量读取认证信息，把所需变量**名称**加入 `env_vars`；自定义 `CODEX_HOME`、`CODEX_IMAGE_PROFILE` 或 `CODEX_IMAGE_TIMEOUT` 时也按需加入。启动 Codex 的进程必须能读取这些变量。中转站仍需支持 Responses API 的 `image_generation` 工具。
+默认配置文件位置：Windows 为 `%USERPROFILE%\.codex\config.toml`，macOS / Linux 为 `~/.codex/config.toml`。使用自定义 `CODEX_HOME` 时，修改该目录下的 `config.toml`，并按[安装说明](https://github.com/TangRj-Git/codex-image-generation/blob/master/docs/INSTALL.md#环境变量与自定义配置)转发这个变量。
 
-首次运行会联网下载 Python（如缺少）和依赖，建议先在终端完成上面的检查。Codex 找不到 `uvx` 时，将 `command` 改为本机 `uvx` 的绝对路径。完整示例见 [PyPI MCP 配置](examples/codex-pypi.toml)。
+保存后重启 Codex，确认 `image_generation` MCP 已加载，就可以直接说：
 
-直接运行 `uvx codex-image-generation` 会进入 MCP stdio 服务并等待客户端消息；日常由 Codex 按配置启动。通过 `uvx` 接入时保持 `command = "uvx"`，不要保存 `--print-config` 输出的缓存 Python 路径，避免清理缓存后配置失效。
+> 请使用 image_generation MCP，生成一只阳光、动漫风格的可爱小猫，保存在当前项目的 outputs 文件夹中。
 
-## 下载包后安装
+`uvx` 自动管理运行环境和依赖，无需下载源码、手动安装 wheel 或固定 Python 版本。`@latest` 会在 MCP 启动时检查 PyPI 上的最新兼容版本；发布新版本后，重新启动 MCP 或重启 Codex 即可使用。服务由 Codex 启动，不需要 `serve` 参数，也不用单独保持终端运行。
 
-当前版本：**0.3.0**。分发包为 `codex-image-generation-0.3.0.zip`，内含 wheel、源码包、安装说明、许可证、配置示例和 SHA-256 校验清单。这是 Python 安装包，需要 [uv](https://docs.astral.sh/uv/getting-started/installation/)；首次安装需要联网下载 Python（如果缺少）和依赖。
+如果 provider 通过环境变量认证，把对应的变量**名称**加入 `env_vars`，并确保启动 Codex 的进程能读取它们。Codex 找不到 `uvx` 时，将 `command` 改为本机 `uvx` 的绝对路径。可直接复制的配置文件见 [codex-uvx.toml](https://github.com/TangRj-Git/codex-image-generation/blob/master/examples/codex-uvx.toml)。
 
-也可以在 [GitHub Release](https://github.com/TangRj-Git/codex-image-generation/releases/tag/v0.3.0) 下载同名 ZIP，按照包内 `INSTALL.md` 操作。GitHub 自动提供的 `Source code.zip` 是源码归档，不是这个安装分发包。
+## 首次检查
 
-**第 1 步：准备自己的环境。** 对方需要已安装 Codex、已有可用的中转站配置，并安装 uv。执行 `uv --version` 确认命令可用。URL、API Key 和模型复用对方自己的 Codex 配置，不需要复制作者的配置。
+先在终端运行以下命令，可以完成依赖准备并检查本地配置：
 
-**第 2 步：安装并检查。** 解压 ZIP，在包含 `.whl` 文件的解压目录打开终端。下面的命令适用于 Windows PowerShell、macOS 和 Linux：
+```sh
+uvx codex-image-generation@latest --version
+uvx codex-image-generation@latest --check
+```
 
-~~~sh
-uv tool install --python 3.11 ./codex_image_generation-0.3.0-py3-none-any.whl
-codex-image-generation --version
-codex-image-generation --check
-~~~
+`--check` 只检查本地配置，不请求中转站。`configured: true` 表示配置可解析；`connection_verified: false` 表示尚未验证上游连接，是正常结果。实际生成图片时会访问中转站，并可能产生费用。
 
-如果系统找不到 `codex-image-generation`，执行 `uv tool update-shell` 后重新打开终端。版本应显示 `0.3.0`，检查结果应包含 `configured: true`；`connection_verified: false` 是正常的，因为此命令只检查本地配置，不请求中转站。检查失败时，先按 [安装说明中的故障排查](docs/INSTALL.md#常见问题) 修正现有配置。
-
-**第 3 步：生成接入配置。** 执行：
-
-~~~sh
-codex-image-generation --print-config
-~~~
-
-**第 4 步：保存配置。** 将上一步输出的整个 `[mcp_servers.image_generation]` TOML 配置块加入**自己电脑**的 Codex 用户配置文件并保存。这条命令只打印内容，不会自动完成接入。
-
-| 系统 | 默认配置文件 |
-| --- | --- |
-| Windows | `%USERPROFILE%\.codex\config.toml` |
-| macOS / Linux | `~/.codex/config.toml` |
-
-设置过 `CODEX_HOME` 时使用该目录下的 `config.toml`。已有同名 `[mcp_servers.image_generation]` 时替换该节，避免重复。保留已有的模型和 provider 设置。若认证依赖环境变量，启动 Codex 的环境也必须能读取这些变量。
-
-**第 5 步：重启 Codex 并验证。** 保存配置后重启 Codex，打开需要保存图片的项目，确认 MCP 已加载且包含 `generate_image` 工具。首次测试可以明确说：
-
-> 请使用 image_generation MCP，生成一只阳光、动漫风格的可爱小狗，保存在当前项目中。
-
-成功时应收到原图路径，并能在当前项目目录找到图片；仅安装成功或 `--check` 通过不代表已经验证上游出图能力。之后日常直接描述图片和保存位置即可，Codex 会按配置启动服务，无需每次安装或手动常驻一个终端。
-
-安装过程不会自动修改 Codex 配置。生成的接入配置使用安装环境中 Python 的绝对路径，不依赖项目源码目录或下载目录；常规安装完成后可以删除解压文件。包内不包含发布者的 URL、API Key 或 Codex 配置。
-
-完整的安装、升级、卸载、离线限制和故障排查见 [安装说明](docs/INSTALL.md)。也提供 [本地 wheel 的 uv 启动配置](examples/codex-uvx.toml)，采用该方式时需要保留 wheel。
-
-## 日常使用
+## 使用示例
 
 | 你对 Codex 说 | 工具行为 |
 | --- | --- |
-| 生成一张安静的书桌插画 | 在当前任务目录保存唯一命名的 PNG |
-| 生成透明背景的茶杯图标，存到 assets/tea.webp | 保存到指定目录，使用 WebP 和透明背景 |
-| 把这张图片中的沙发改成蓝色 | 将参考图传给上游进行编辑 |
-| 按上一张继续调整，光线暖一些 | 在同一 provider 支持历史引用时继续编辑 |
+| 生成一张安静的书桌插画 | 在当前项目保存图片 |
+| 生成透明背景的茶杯图标，存到 assets/tea.webp | 按指定路径和格式保存 |
+| 把这张图片中的沙发改成蓝色 | 使用参考图进行编辑 |
+| 按上一张继续调整，光线暖一些 | 在上游支持历史引用时继续编辑 |
 
-风格可以是写实、动漫、插画、像素画、海报等，由提示词和上游图像模型决定。本项目封装官方 Responses 图像工具的调用方式；不保证与 ChatGPT 网页或 Codex 内置工具的模型路由、全部功能、界面和效果完全相同。
+支持参考图、蒙版、历史图片引用和可选流式中间预览。已有文件不会覆盖，部分生成失败时会保留成功图片；不会自动重复付费生成。参数、格式限制和返回字段详见[工具参考](https://github.com/TangRj-Git/codex-image-generation/blob/master/docs/TOOLS.md)。
 
-支持的主要能力：
+## 效果展示
 
-- PNG、JPEG（含 `jpg` 别名）、WebP 静态图片；透明背景使用 PNG / WebP。
-- 尺寸、质量、背景、JPEG / WebP 压缩率等选项，具体可用值由上游模型决定。
-- 参考图、蒙版，以及同一 provider 的历史响应 / 图像 ID。
-- 可选流式中间图与 MCP 进度；客户端是否实时显示取决于其支持。
-- 原图落盘、受大小限制的预览、绝对路径和结构化结果。
-- 已有文件不覆盖；部分图片失败时保留成功结果；不会自动重试付费生成。
+阳光下的动漫风格小狗：
 
-不输出 SVG、GIF 动画或视频。所有参数、返回字段和限制见 [工具参考](docs/TOOLS.md)。
+![阳光下坐在草地上的动漫风格可爱小狗](https://raw.githubusercontent.com/TangRj-Git/codex-image-generation/master/sunny-anime-puppy.png)
 
-## 模型、凭据与当前目录
+## 模型与运行条件
 
-工具公开参数只有一个必需的业务输入 `prompt`，以及由 Codex 从任务上下文提供的绝对工作目录 `cwd`。用户不必在每次对话中手动填写路径；没有指定输出位置时，直接保存到 `cwd`。
+- 使用自己的 Codex provider 配置，无需为 MCP 再配置一套 URL、API Key 或图像模型。
+- 有可靠调用上下文时使用传入的 `current_model`，否则读取配置中的 `model`。普通 MCP 无法自行确认界面临时选择的模型。
+- 包要求 Python 3.11 及以上，实际运行还取决于平台和依赖兼容性。uv 会管理 Python；首次安装和更新检查需要联网。
+- 图片质量、参数支持和生成速度取决于中转站及其上游。预览可能经过压缩，完整图片以返回的保存路径为准。
 
-模型选择顺序：
+环境变量、自定义 profile、升级和常见问题见[安装说明](https://github.com/TangRj-Git/codex-image-generation/blob/master/docs/INSTALL.md)。
 
-1. Codex 能可靠获知当前会话的精确 API 模型 ID 时，调用时传入 `current_model`。
-2. 未传入时，读取所选 Codex 配置中的 `model`。
-3. 两处都没有模型时明确报错，不硬编码兜底模型。
+## 开发与维护
 
-普通 MCP 协议不保证提供当前会话模型。因此，界面临时切换模型后能否立即同步，取决于 Codex 是否传入可靠上下文；不能仅凭读取配置文件就承诺跟随所有界面切换。`current_model` 是调用参数，无需用户另建模型配置。
+在源码目录准备环境并运行测试：
 
-连接设置只读取所选用户级 Codex provider：
-
-- 复用 `base_url`、环境变量 API Key、配置中的 bearer token、请求头和查询参数。
-- 在所选 provider 要求 API Key 认证时，支持读取 Codex 文件存储的 API Key。
-- 支持已有 profile；使用 `--profile` 选择。
-- 不扫描其他 provider 寻找密钥，不读取项目 `.env`，不实现 ChatGPT OAuth 或系统钥匙串登录。
-
-`--print-config` 会生成所需环境变量**名称**的白名单，不复制密钥值。若 provider 使用环境变量认证，启动 Codex 的环境也必须能访问这些变量。
-
-| 可选启动设置 | 用途 |
-| --- | --- |
-| `--codex-home` / `CODEX_HOME` | 定位已有 Codex 配置目录 |
-| `--profile` / `CODEX_IMAGE_PROFILE` | 选择已有 profile |
-| `CODEX_IMAGE_TIMEOUT` | 上游超时秒数，默认 300，范围大于 0 且不超过 3600 |
-
-## 系统兼容性
-
-项目使用 Python 3.11+，wheel 为 `py3-none-any`，不写死开发者目录。依赖中包含本机二进制组件，因此这一标签不表示任意旧系统都能直接安装。
-
-| 平台 | 验证情况 |
-| --- | --- |
-| Windows x64 | 本地测试、安装包独立环境启动和 stdio 验证 |
-| Linux x64 | 容器内安装、测试和 stdio 验证 |
-| macOS Apple Silicon | 已检查依赖 wheel 可获取；尚无 macOS 实机运行验证 |
-| macOS Intel | 当前 cryptography 50 系列缺少 Intel wheel，可能需要本机构建；尚未验证完整安装 |
-
-建议使用仍受支持的现代系统。旧版 Linux（例如 glibc 2.17）可能缺少当前 Pillow 的预编译包。首次安装需要联网；不将此包描述为免依赖、完全离线的可执行文件。
-
-## 源码开发与构建分发包
-
-仅使用工具时无需下载源码。维护项目时，在源码目录执行：
-
-~~~sh
+```sh
 uv sync --locked
 uv run --locked python -B -m unittest discover -s tests -v
-uv run --locked python scripts/build_release.py
-uv run --locked python scripts/smoke_wheel.py --wheel dist/codex_image_generation-0.3.0-py3-none-any.whl
-~~~
+```
 
-构建输出：
+开发规范见[贡献指南](https://github.com/TangRj-Git/codex-image-generation/blob/master/CONTRIBUTING.md)，构建、GitHub Release 与 PyPI 发布流程见[发布说明](https://github.com/TangRj-Git/codex-image-generation/blob/master/docs/RELEASING.md)，版本变更见[更新记录](https://github.com/TangRj-Git/codex-image-generation/blob/master/CHANGELOG.md)。
 
-~~~text
-dist/
-  codex_image_generation-0.3.0-py3-none-any.whl
-  codex_image_generation-0.3.0.tar.gz
-  codex-image-generation-0.3.0.zip
-  SHA256SUMS-0.3.0.txt
-~~~
-
-构建脚本检查包内容，不纳入本地配置、凭据或虚拟环境。源码包包含 README 使用的展示图 `sunny-anime-puppy.png`，其他生成图片不纳入；wheel 不包含展示图。安装冒烟测试使用临时安装目录、假凭据和无网络图像请求，从其他工作目录验证 CLI 与 MCP；不会替换你的全局安装。
-
-仓库包含 Windows、Linux、macOS 的 CI 工作流，执行测试、打包和安装验证，并保存构建产物。维护者可手动运行发布工作流，为已存在的版本标签创建 GitHub Release 草稿；只有全部检查通过才会创建草稿。独立的 **Publish to PyPI** 工作流会校验公开 Release 的原始安装包，通过 `uvx` 验证后使用 Trusted Publishing 上传。工作流是否通过以实际运行结果为准。
-
-详见 [发布维护说明](docs/RELEASING.md) 和 [更新记录](CHANGELOG.md)。
-
-## 贡献、反馈与许可
-
-- 作者：TangRuoJie；邮箱：[3177065378@qq.com](mailto:3177065378@qq.com)。
-- 贡献代码或改进文档，请先阅读 [贡献指南](CONTRIBUTING.md)。
-- 普通问题可通过仓库 Issues 反馈；漏洞或凭据泄漏请按 [安全报告说明](SECURITY.md) 私下联系。
-- 本项目采用 [MIT 许可证](LICENSE)，允许使用、修改和商业分发，分发时需保留版权及许可声明。第三方依赖遵循各自的许可证。
-
-## 官方参考
-
-- [Responses 图像生成工具](https://developers.openai.com/api/docs/guides/tools-image-generation)
-- [Responses Create API](https://developers.openai.com/api/reference/resources/responses/methods/create)
-- [Codex MCP 配置](https://developers.openai.com/codex/mcp)
-- [Codex 配置参考](https://developers.openai.com/codex/config-reference)
+由 TangRuoJie 维护，采用 [MIT 许可证](https://github.com/TangRj-Git/codex-image-generation/blob/master/LICENSE)。这是独立社区项目，与 OpenAI 无隶属关系。普通问题通过 [Issues](https://github.com/TangRj-Git/codex-image-generation/issues) 反馈；漏洞或凭据泄漏请按[安全报告说明](https://github.com/TangRj-Git/codex-image-generation/blob/master/SECURITY.md)私下联系。
