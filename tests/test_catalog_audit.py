@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock, patch
 import httpx2
 
 from codex_image_generation import model_catalog as catalog
-from codex_image_generation.model_cache import cache_lock, read_cache, write_cache
+from codex_image_generation.model_cache import MAX_CACHE_DEPTH, cache_lock, read_cache, write_cache
 from codex_image_generation.local_files import read_regular_bytes
 
 
@@ -133,6 +133,34 @@ class CatalogRefreshAuditTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(read_cache(path, "test"))
         original = path.read_bytes()
         self.assertFalse(write_cache(path, {"value": float("nan")}))
+        self.assertEqual(path.read_bytes(), original)
+
+    async def test_cache_depth_boundary_is_explicit_for_reading_and_writing(self):
+        path = self.root / "cache.json"
+        for container in (lambda child: [child], lambda child: {"child": child}, lambda child: (child,)):
+            with self.subTest(container=container):
+                value = 0
+                for _ in range(MAX_CACHE_DEPTH - 1):
+                    value = container(value)
+                entry = {"version": 1, "scope": "test", "fetched_at": time.time(), "value": value}
+                self.assertTrue(write_cache(path, entry))
+                self.assertIsNotNone(read_cache(path, "test"))
+                original = path.read_bytes()
+                entry["value"] = container(value)
+                self.assertFalse(write_cache(path, entry))
+                self.assertEqual(path.read_bytes(), original)
+                # This depth is accepted by both Python 3.11 and 3.14 JSON decoders.
+                # The application must enforce the same limit independently of them.
+                path.write_text(json.dumps(entry), encoding="utf-8")
+                self.assertIsNone(read_cache(path, "test"))
+
+    async def test_cyclic_cache_is_rejected_without_replacing_valid_data(self):
+        path = self.root / "cache.json"
+        entry = {"version": 1, "scope": "test", "fetched_at": time.time()}
+        self.assertTrue(write_cache(path, entry))
+        original = path.read_bytes()
+        entry["cycle"] = entry
+        self.assertFalse(write_cache(path, entry))
         self.assertEqual(path.read_bytes(), original)
 
     async def test_cached_shutdown_becomes_effective_without_network(self):

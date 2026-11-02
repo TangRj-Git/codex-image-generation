@@ -15,6 +15,7 @@ from weakref import WeakKeyDictionary, WeakValueDictionary
 from .local_files import read_regular_bytes
 
 MAX_CACHE_BYTES = 1_000_000
+MAX_CACHE_DEPTH = 32
 _CACHE_LOCKS: WeakKeyDictionary[Any, WeakValueDictionary[str, asyncio.Lock]] = WeakKeyDictionary()
 
 
@@ -37,6 +38,23 @@ def _valid_timestamp(value: Any) -> bool:
         return False
 
 
+def _valid_nesting(value: Any) -> bool:
+    """Bound container depth explicitly instead of relying on JSON decoder recursion."""
+    iterators = [iter((value,))]
+    while iterators:
+        try:
+            current = next(iterators[-1])
+        except StopIteration:
+            iterators.pop()
+            continue
+        if isinstance(current, (dict, list, tuple)):
+            if len(iterators) > MAX_CACHE_DEPTH:
+                return False
+            children = current.values() if isinstance(current, dict) else current
+            iterators.append(iter(children))
+    return True
+
+
 def read_cache(path: Path, scope: str) -> dict[str, Any] | None:
     try:
         data = read_regular_bytes(path, MAX_CACHE_BYTES)
@@ -44,7 +62,7 @@ def read_cache(path: Path, scope: str) -> dict[str, Any] | None:
         if not isinstance(entry, dict) or type(entry.get("version")) is not int or entry["version"] != 1 or entry.get("scope") != scope:
             return None
         fetched = entry.get("fetched_at")
-        if not _valid_timestamp(fetched):
+        if not _valid_timestamp(fetched) or not _valid_nesting(entry):
             return None
         return entry
     except (OSError, ValueError, TypeError, RecursionError, OverflowError):
@@ -59,6 +77,8 @@ def fresh(entry: dict[str, Any] | None, ttl: float) -> bool:
 def write_cache(path: Path, entry: dict[str, Any]) -> bool:
     temporary = None
     try:
+        if not _valid_nesting(entry):
+            return False
         data = json.dumps(entry, ensure_ascii=False, allow_nan=False).encode("utf-8")
         if len(data) > MAX_CACHE_BYTES:
             return False
