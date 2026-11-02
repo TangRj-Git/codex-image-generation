@@ -1,6 +1,6 @@
 [project]
 name = "codex-image-generation"
-version = "0.3.0"
+version = "0.4.0"
 description = "A local Codex MCP server for Responses image generation using existing provider credentials"
 readme = { file = "README_PYPI.md", content-type = "text/markdown" }
 authors = [

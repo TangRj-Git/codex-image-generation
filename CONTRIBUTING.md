@@ -33,11 +33,12 @@ GitHub 首页使用 `README.md`，PyPI 详细描述使用 `README_PYPI.md`。后
 
 ```sh
 uv run --locked python scripts/build_release.py
-uv run --locked python scripts/smoke_wheel.py --wheel dist/codex_image_generation-0.3.0-py3-none-any.whl
+uv run --locked python scripts/smoke_wheel.py --wheel dist/codex_image_generation-0.4.0-py3-none-any.whl
+uv run --locked python -B scripts/smoke_uvx.py --package dist/codex_image_generation-0.4.0-py3-none-any.whl --expected-version 0.4.0
 git diff --check
 ```
 
-版本变化后将命令中的 wheel 文件名换成实际产物。安装验证使用临时工具环境和假 Codex 配置，不替换你的全局安装；首次运行可能下载依赖。完整流程见 [发布说明](docs/RELEASING.md)。
+当前示例验证本地 `0.4.0` 产物，不会创建标签、推送或发布。版本变化后将命令中的 wheel 文件名和预期版本换成实际产物。安装验证使用临时工具环境和假 Codex 配置，不替换你的全局安装；首次运行可能下载依赖。完整流程见 [发布说明](docs/RELEASING.md)。
 
 ## 提交 PR
 

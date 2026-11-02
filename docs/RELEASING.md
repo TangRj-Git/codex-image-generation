@@ -2,6 +2,8 @@
 
 本文供维护者构建和发布版本。用户接入统一使用 [uvx 配置](INSTALL.md)，不需要下载源码或手动安装 wheel。GitHub Release 与 PyPI 发布由各自的手动工作流完成。
 
+当前以 `0.4.0` 的本地打包和安装验证为例。构建产物不会自动创建或推送 Git 标签，也不会上传 GitHub Release 或 PyPI；下文发布命令仅说明后续流程，不表示已经执行。
+
 ## 版本与检查
 
 发布新版本时，同步更新 `pyproject.toml` 的 `project.version`、`src/codex_image_generation/__init__.py` 的 `__version__` 和 `CHANGELOG.md`。下文校验命令中的版本应替换为待发布版本；面向用户的 `@latest` 配置无需修改。然后在项目根目录执行：
@@ -31,12 +33,12 @@ uv run --frozen python scripts/build_release.py
 
 脚本先核对 `project.version` 与源码 `__version__`，再调用 `uv build`，在临时目录构建并检查 wheel、源码包内容，随后写入 `dist/`。校验还包含包内版本、源码 README 引用，以及 Windows 保留名和 Unicode 规范化后的路径冲突。只更新当前版本的同名产物，不清空整个目录。
 
-0.3.0 的主要产物：
+0.4.0 的主要产物：
 
-- `codex_image_generation-0.3.0-py3-none-any.whl`：供 PyPI 分发的安装包。
-- `codex_image_generation-0.3.0.tar.gz`：源码发行包。
-- `codex-image-generation-0.3.0.zip`：GitHub Release 归档，含 wheel、源码包、安装说明、MIT 许可证、MCP 配置示例和内部校验和。
-- `SHA256SUMS-0.3.0.txt`：外部 SHA-256 校验文件，校验 wheel、源码包和 ZIP。
+- `codex_image_generation-0.4.0-py3-none-any.whl`：供 PyPI 分发的安装包。
+- `codex_image_generation-0.4.0.tar.gz`：源码发行包。
+- `codex-image-generation-0.4.0.zip`：GitHub Release 归档，含 wheel、源码包、安装说明、MIT 许可证、MCP 配置示例和内部校验和。
+- `SHA256SUMS-0.4.0.txt`：外部 SHA-256 校验文件，校验 wheel、源码包和 ZIP。
 
 未发布改动的本地验证建议使用独立目录，例如 `uv run --locked python scripts/build_release.py --out-dir dist/local-check`，避免与已保存的正式发行文件混淆。ZIP 中的安装说明和示例位于同一层，构建时会调整对应的相对链接。ZIP 是发行归档；其 `@latest` 接入方式只会安装 PyPI 上已有的版本。
 
@@ -49,10 +51,11 @@ uv run --frozen python scripts/build_release.py
 ## 安装后验证
 
 ```sh
-uv run --frozen python scripts/smoke_wheel.py --wheel dist/codex_image_generation-0.3.0-py3-none-any.whl
+uv run --frozen python scripts/smoke_wheel.py --wheel dist/codex_image_generation-0.4.0-py3-none-any.whl
+uv run --locked python -B scripts/smoke_uvx.py --package dist/codex_image_generation-0.4.0-py3-none-any.whl --expected-version 0.4.0
 ```
 
-该脚本在临时隔离的 uv 工具目录安装 wheel，使用假 Codex 配置，从与源码无关的工作目录验证：
+第一个脚本在临时隔离的 uv 工具目录安装 wheel，第二个脚本检查 uvx 启动。两者都使用假 Codex 配置，从与源码无关的工作目录验证：
 
 - 已安装命令和版本；
 - `--check` 与 `--print-config`；
@@ -76,14 +79,14 @@ uv run --frozen python scripts/smoke_wheel.py --wheel dist/codex_image_generatio
 
 ## 创建版本 Release 草稿
 
-确认版本文件、文档和待发布提交一致后，创建并推送对应版本标签。下面以 `v0.3.0` 展示命令格式；这个版本已经发布，实际操作请使用新的版本号：
+以下是后续准备公开发布时的步骤，不属于本地打包操作。确认版本文件、文档和待发布提交一致并决定发布后，才创建并推送对应版本标签；下面以 `v0.4.0` 展示命令格式：
 
 ```sh
-git tag -a v0.3.0 -m "Release v0.3.0"
-git push origin v0.3.0
+git tag -a v0.4.0 -m "Release v0.4.0"
+git push origin v0.4.0
 ```
 
-标签须指向已经准备好的提交；已有标签不要强制覆盖。然后在 GitHub Actions 中选择 **Prepare draft release**，从仓库默认分支手动运行，输入已存在的 `v0.3.0` 标签。
+标签须指向已经准备好的提交；已有标签不要强制覆盖。完成上述发布准备后，在 GitHub Actions 中选择 **Prepare draft release**，从仓库默认分支手动运行，输入已存在的 `v0.4.0` 标签。
 
 工作流会核对标签、`project.version` 和 `__version__`，解析为固定提交，对该提交运行全部平台测试及扫描。全部通过后，它会使用已测试的 Linux/Python 3.11 产物，复核校验和与远端标签，再创建附带 ZIP、wheel、源码包和校验文件的 Release 草稿。已有同名 Release 时会停止，不覆盖附件或自动重新发布。
 
@@ -113,11 +116,11 @@ PyPI 发布使用 `.github/workflows/publish-pypi.yml`（GitHub Actions 中显�
 
 本流程复用原始 Release 附件，不重新打包或替换已经公开的同版本文件。PyPI 不允许用新文件覆盖已上传的同名版本文件；后续代码或包元数据修改应发布新版本。推送 `README.md` 会更新 GitHub 首页；修改 `README_PYPI.md` 则需要构建并发布新版本，才会更新 PyPI 的描述。已发布版本的说明不会自动变化。
 
-上传成功后，先检查 `@latest` 的实际版本，再对本次发布的精确版本运行安装验证。以下 `0.3.0` 仅为校验命令示例，发布其他版本时应相应替换：
+只有在 `0.4.0` 实际上传成功后，才通过下面的包索引命令检查 `@latest` 和精确发布版本。仅做本地打包时，应使用上文的本地 wheel 路径进行验证；发布其他版本时相应替换版本号：
 
 ```sh
 uvx codex-image-generation@latest --version
-uv run --locked python -B scripts/smoke_uvx.py --package codex-image-generation==0.3.0 --expected-version 0.3.0
+uv run --locked python -B scripts/smoke_uvx.py --package codex-image-generation==0.4.0 --expected-version 0.4.0
 ```
 
 第二条命令使用假凭据和临时配置，验证指定版本的 MCP 工具发现和本地参数校验，不调用真实图像 API。发布测试使用精确版本，以确保验证的是待发布产物；这不改变用户配置中的 `@latest`。
