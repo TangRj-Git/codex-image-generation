@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import os
 from pathlib import Path, PurePosixPath
@@ -14,8 +15,29 @@ import sys
 import tarfile
 import tempfile
 import tomllib
+import unicodedata
 import zipfile
 from email.parser import BytesParser
+
+
+_WINDOWS_RESERVED = {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"}
+_WINDOWS_RESERVED.update(f"{prefix}{number}" for prefix in ("COM", "LPT") for number in "123456789¹²³")
+
+
+def validate_module_version(data: bytes, version: str) -> None:
+    """Check the public version without importing or executing package code."""
+    try:
+        tree = ast.parse(data.decode("utf-8"))
+        versions = [
+            ast.literal_eval(node.value)
+            for node in tree.body
+            if isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id == "__version__" for target in node.targets)
+        ]
+    except (SyntaxError, UnicodeError, ValueError, TypeError):
+        raise ValueError("Cannot read the package's literal __version__") from None
+    if versions != [version]:
+        raise ValueError("Package module version differs from project metadata")
 
 
 def project_identity(project: Path) -> tuple[str, str, str]:
@@ -25,7 +47,9 @@ def project_identity(project: Path) -> tuple[str, str, str]:
         raise ValueError("Project name cannot be used as a release filename")
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.!+_-]*", version):
         raise ValueError("Project version cannot be used as a release filename")
-    return name, re.sub(r"[-_.]+", "_", name).lower(), version
+    module = re.sub(r"[-_.]+", "_", name).lower()
+    validate_module_version((project / "src" / module / "__init__.py").read_bytes(), version)
+    return name, module, version
 
 
 def safe_member(name: str) -> PurePosixPath:
@@ -35,13 +59,19 @@ def safe_member(name: str) -> PurePosixPath:
     path = PurePosixPath(name)
     if path.is_absolute() or any(part in {"", ".", ".."} for part in name.rstrip("/").split("/")):
         raise ValueError(f"Unsafe archive member: {name!r}")
+    for part in path.parts:
+        if (part.endswith((".", " ")) or any(ord(character) < 32 or ord(character) == 127 for character in part)
+                or any(character in '<>"|?*' for character in part)
+                or part.split(".", 1)[0].rstrip(" ").upper() in _WINDOWS_RESERVED):
+            raise ValueError(f"Unsafe archive member: {name!r}")
     return path
 
 
 def validate_metadata(data: bytes, name: str, version: str) -> None:
     metadata = BytesParser().parsebytes(data)
     normalize = lambda value: re.sub(r"[-_.]+", "-", value).lower()
-    if normalize(metadata.get("Name", "")) != normalize(name) or metadata.get("Version") != version:
+    names = metadata.get_all("Name", [])
+    if len(names) != 1 or normalize(names[0]) != normalize(name) or metadata.get_all("Version", []) != [version]:
         raise ValueError("Built distribution metadata differs from pyproject.toml")
     if metadata.get_all("License-Expression") != ["MIT"] or metadata.get_all("License-File") != ["LICENSE"]:
         raise ValueError("Built distribution must declare MIT and the LICENSE file")
@@ -62,7 +92,7 @@ def validate_wheel(path: Path, name: str, module: str, version: str, *, expected
     with zipfile.ZipFile(path) as archive:
         for entry in archive.infolist():
             member = safe_member(entry.filename)
-            key = str(member).casefold()
+            key = unicodedata.normalize("NFC", str(member)).casefold()
             if key in seen:
                 raise ValueError(f"Duplicate archive member: {entry.filename}")
             seen.add(key)
@@ -72,6 +102,8 @@ def validate_wheel(path: Path, name: str, module: str, version: str, *, expected
                 if str(member) not in {module, dist_info, f"{dist_info}/licenses"}:
                     raise ValueError(f"Unexpected wheel directory: {entry.filename}")
                 continue
+            if stat.S_IFMT(entry.external_attr >> 16) not in {0, stat.S_IFREG}:
+                raise ValueError(f"Non-regular wheel member: {entry.filename}")
             allowed = str(member) == license_path or (
                 len(member.parts) == 2
                 and (
@@ -89,6 +121,7 @@ def validate_wheel(path: Path, name: str, module: str, version: str, *, expected
         if not required <= set(files):
             raise ValueError(f"Incomplete wheel: {sorted(required - set(files))}")
         validate_metadata(archive.read(f"{dist_info}/METADATA"), name, version)
+        validate_module_version(archive.read(f"{module}/__init__.py"), version)
         validate_license(archive.read(license_path), expected_license)
         wheel_metadata = BytesParser().parsebytes(archive.read(f"{dist_info}/WHEEL"))
         if wheel_metadata.get("Root-Is-Purelib") != "true" or "py3-none-any" not in wheel_metadata.get_all("Tag", []):
@@ -108,7 +141,7 @@ def validate_sdist(path: Path, name: str, module: str, version: str, *, expected
             member = safe_member(entry.name)
             if member.parts[0] != root:
                 raise ValueError(f"Unexpected sdist root: {entry.name}")
-            key = str(member).casefold()
+            key = unicodedata.normalize("NFC", str(member)).casefold()
             if key in seen:
                 raise ValueError(f"Duplicate archive member: {entry.name}")
             seen.add(key)
@@ -132,6 +165,18 @@ def validate_sdist(path: Path, name: str, module: str, version: str, *, expected
         required = {"pyproject.toml", "README.md", "PKG-INFO", "LICENSE", f"src/{module}/__init__.py", f"src/{module}/__main__.py"}
         if not required <= set(files):
             raise ValueError(f"Incomplete sdist: {sorted(required - set(files))}")
+        with archive.extractfile(f"{root}/src/{module}/__init__.py") as module_file:
+            validate_module_version(module_file.read(), version)
+        with archive.extractfile(f"{root}/pyproject.toml") as project_file:
+            project_metadata = tomllib.loads(project_file.read().decode("utf-8"))["project"]
+        normalize = lambda value: re.sub(r"[-_.]+", "-", value).lower()
+        if (normalize(project_metadata.get("name", "")) != normalize(name)
+                or project_metadata.get("version") != version):
+            raise ValueError("Source project metadata differs from the distribution")
+        readme = project_metadata.get("readme")
+        readme_path = readme.get("file") if isinstance(readme, dict) else readme
+        if isinstance(readme_path, str) and str(safe_member(readme_path)) not in files:
+            raise ValueError("Source distribution is missing its declared README")
         metadata_file = archive.extractfile(f"{root}/PKG-INFO")
         if metadata_file is None:
             raise ValueError("Source distribution has no metadata")
@@ -189,7 +234,11 @@ def build_release(project: Path, out_dir: Path) -> list[Path]:
         guide_copy = temporary / "INSTALL.md"
         example_copy = temporary / "codex-uvx.toml"
         license_copy = temporary / "LICENSE"
-        shutil.copyfile(guide, guide_copy)
+        # INSTALL.md is at the ZIP root next to the example, unlike its repository layout.
+        guide_copy.write_text(
+            guide.read_text(encoding="utf-8").replace("(../examples/codex-uvx.toml)", "(codex-uvx.toml)"),
+            encoding="utf-8", newline="\n",
+        )
         shutil.copyfile(example, example_copy)
         license_copy.write_bytes(expected_license)
         members = [wheel, sdist, guide_copy, example_copy, license_copy]

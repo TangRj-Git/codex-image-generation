@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import contextlib
 import importlib.util
 import io
 import os
@@ -10,6 +11,7 @@ from pathlib import Path
 import stat
 import tarfile
 import tempfile
+import textwrap
 import unittest
 from unittest.mock import patch
 import zipfile
@@ -23,6 +25,20 @@ def load_script(name):
     return module
 
 
+def workflow_python(filename: str, marker: str) -> str:
+    """Exercise the workflow's actual Python branch logic without a YAML dependency."""
+    path = Path(__file__).resolve().parents[1] / ".github" / "workflows" / filename
+    if not path.is_file():
+        raise unittest.SkipTest("Workflow sources are not included in source distributions")
+    lines = path.read_text(encoding="utf-8").splitlines()
+    starts = [index for index, line in enumerate(lines) if line.strip() == "# " + marker]
+    if len(starts) != 1:
+        raise AssertionError(f"Expected one workflow check marker: {marker}")
+    start = starts[0]
+    end = next(index for index in range(start + 1, len(lines)) if lines[index].strip() == "PY")
+    return textwrap.dedent("\n".join(lines[start:end]))
+
+
 release = load_script("build_release")
 smoke = load_script("smoke_wheel")
 NAME = "codex-image-generation"
@@ -31,12 +47,14 @@ VERSION = "0.3.0"
 DIST_INFO = f"{MODULE}-{VERSION}.dist-info"
 METADATA = f"Metadata-Version: 2.4\nName: {NAME}\nVersion: {VERSION}\nLicense-Expression: MIT\nLicense-File: LICENSE\n".encode()
 LICENSE = b"MIT License\n\nCopyright (c) 2026 TangRuoJie\nFixture license text.\n"
+MODULE_INIT = f'__version__ = "{VERSION}"\n'.encode()
+PROJECT_METADATA = f'[project]\nname="{NAME}"\nversion="{VERSION}"\n'.encode()
 
 
 def make_wheel(directory: Path, extra=None, *, omit=()) -> Path:
     path = directory / f"{MODULE}-{VERSION}-py3-none-any.whl"
     members = {
-        f"{MODULE}/__init__.py": b"# fixture\n",
+        f"{MODULE}/__init__.py": MODULE_INIT,
         f"{MODULE}/__main__.py": b"# fixture\n",
         f"{DIST_INFO}/METADATA": METADATA,
         f"{DIST_INFO}/WHEEL": b"Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
@@ -54,11 +72,11 @@ def make_wheel(directory: Path, extra=None, *, omit=()) -> Path:
 def make_sdist(directory: Path, extra=None, *, omit=()) -> Path:
     path = directory / f"{MODULE}-{VERSION}.tar.gz"
     members = {
-        "pyproject.toml": b"[project]\n",
+        "pyproject.toml": PROJECT_METADATA,
         "README.md": b"Fixture documentation\n",
         "PKG-INFO": METADATA,
         "LICENSE": LICENSE,
-        f"src/{MODULE}/__init__.py": b"# fixture\n",
+        f"src/{MODULE}/__init__.py": MODULE_INIT,
         f"src/{MODULE}/__main__.py": b"# fixture\n",
     }
     with tarfile.open(path, "w:gz") as archive:
@@ -72,6 +90,67 @@ def make_sdist(directory: Path, extra=None, *, omit=()) -> Path:
 
 
 class DistributionTests(unittest.TestCase):
+    def test_release_installation_workflow_selects_tagged_verifier(self):
+        code = workflow_python("publish-pypi.yml", "RELEASE_INSTALLATION_CHECK")
+        for available, selected in (
+            (("smoke_uvx.py", "smoke_wheel.py"), "smoke_uvx.py"),
+            (("smoke_wheel.py",), "smoke_wheel.py"),
+            ((), None),
+        ):
+            with self.subTest(available=available), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                source = root / "release-source"
+                (source / "scripts").mkdir(parents=True)
+                for name in available:
+                    (source / "scripts" / name).touch()
+                wheel = root / "dist" / "pypi" / f"{MODULE}-{VERSION}-py3-none-any.whl"
+                wheel.parent.mkdir(parents=True)
+                wheel.touch()
+                with contextlib.chdir(source), patch.dict(os.environ, {"GITHUB_WORKSPACE": str(root), "RELEASE_VERSION": VERSION}), patch(
+                    "subprocess.run"
+                ) as run, contextlib.redirect_stdout(io.StringIO()) as output:
+                    if selected is None:
+                        with self.assertRaisesRegex(SystemExit, "no supported installation verifier"):
+                            exec(compile(code, "publish-pypi.yml", "exec"), {})
+                        run.assert_not_called()
+                        continue
+                    exec(compile(code, "publish-pypi.yml", "exec"), {})
+                run.assert_called_once()
+                command = run.call_args.args[0]
+                self.assertEqual(command[2], "scripts/" + selected)
+                self.assertIn(str(wheel), command)
+                self.assertTrue(run.call_args.kwargs["check"])
+                if selected == "smoke_uvx.py":
+                    self.assertEqual(command[-2:], ["--expected-version", VERSION])
+                else:
+                    self.assertEqual(command[-2:], ["--wheel", str(wheel)])
+                    self.assertIn("uvx is not validated", output.getvalue())
+
+    def test_historical_test_workflow_skips_only_missing_uvx_verifier(self):
+        code = workflow_python("test.yml", "OPTIONAL_UVX_CHECK")
+        for available in (("smoke_uvx.py", "smoke_wheel.py"), ("smoke_wheel.py",), ()):
+            with self.subTest(available=available), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                (root / "scripts").mkdir()
+                for name in available:
+                    (root / "scripts" / name).touch()
+                with contextlib.chdir(root), patch.dict(os.environ, {"RELEASE_VERSION": VERSION}), patch(
+                    "subprocess.run"
+                ) as run, contextlib.redirect_stdout(io.StringIO()) as output:
+                    if not available:
+                        with self.assertRaisesRegex(SystemExit, "no supported installation verifier"):
+                            exec(compile(code, "test.yml", "exec"), {})
+                        run.assert_not_called()
+                        continue
+                    exec(compile(code, "test.yml", "exec"), {})
+                if "smoke_uvx.py" in available:
+                    run.assert_called_once()
+                    self.assertEqual(run.call_args.args[0][2], "scripts/smoke_uvx.py")
+                    self.assertEqual(run.call_args.args[0][-2:], ["--expected-version", VERSION])
+                else:
+                    run.assert_not_called()
+                    self.assertIn("uvx-specific check is skipped", output.getvalue())
+
     def test_accepts_pep639_license_and_community_documents(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -122,16 +201,57 @@ class DistributionTests(unittest.TestCase):
     def test_accepts_separate_pypi_readme_alongside_github_readme(self):
         with tempfile.TemporaryDirectory() as directory:
             sdist = make_sdist(Path(directory), {
-                "pyproject.toml": b'[project]\nreadme = {file = "README_PYPI.md", content-type = "text/markdown"}\n',
+                "pyproject.toml": PROJECT_METADATA + b'readme = {file = "README_PYPI.md", content-type = "text/markdown"}\n',
                 "README_PYPI.md": b"Package purpose and MCP configuration.\n",
             })
             files = release.validate_sdist(sdist, NAME, MODULE, VERSION)
             self.assertTrue({"README.md", "README_PYPI.md"} <= set(files))
 
     def test_rejects_unsafe_paths_on_every_os(self):
-        for name in ("/etc/config", "../auth.json", "a/../secret", "C:/auth.json", "a\\config", "a//config", "a/./config", ""):
+        for name in ("/etc/config", "../auth.json", "a/../secret", "C:/auth.json", "a\\config", "a//config", "a/./config", "",
+                     "module/CON.py", "module/LPT1.py", "module/COM².py", "module/aux .py", "module/file. ", "module/a?.py"):
             with self.subTest(name=name), self.assertRaises(ValueError):
                 release.safe_member(name)
+
+    def test_rejects_unicode_normalization_collisions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for builder, validator, parent in (
+                (make_wheel, release.validate_wheel, MODULE),
+                (make_sdist, release.validate_sdist, f"src/{MODULE}"),
+            ):
+                with self.subTest(kind=builder.__name__), self.assertRaisesRegex(ValueError, "Duplicate"):
+                    validator(builder(root, {f"{parent}/caf\u00e9.py": b"", f"{parent}/cafe\u0301.py": b""}), NAME, MODULE, VERSION)
+
+    def test_package_version_and_source_readme_must_match_distribution(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for builder, validator, parent in (
+                (make_wheel, release.validate_wheel, MODULE),
+                (make_sdist, release.validate_sdist, f"src/{MODULE}"),
+            ):
+                with self.subTest(kind=builder.__name__), self.assertRaisesRegex(ValueError, "module version"):
+                    validator(builder(root, {f"{parent}/__init__.py": b'__version__="99.0.0"\n'}), NAME, MODULE, VERSION)
+            sdist = make_sdist(root, {"pyproject.toml": PROJECT_METADATA + b'readme="README_PYPI.md"\n'})
+            with self.assertRaisesRegex(ValueError, "declared README"):
+                release.validate_sdist(sdist, NAME, MODULE, VERSION)
+            sdist = make_sdist(root, {"pyproject.toml": PROJECT_METADATA.replace(VERSION.encode(), b"99.0.0")})
+            with self.assertRaisesRegex(ValueError, "Source project metadata"):
+                release.validate_sdist(sdist, NAME, MODULE, VERSION)
+
+    def test_duplicate_identity_metadata_is_rejected(self):
+        for extra in (b"Name: other-package\n", b"Version: 99.0.0\n"):
+            with self.subTest(extra=extra), self.assertRaisesRegex(ValueError, "metadata differs"):
+                release.validate_metadata(METADATA + extra, NAME, VERSION)
+
+    def test_source_version_drift_is_rejected_before_build(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "pyproject.toml").write_bytes(PROJECT_METADATA)
+            (root / "src" / MODULE).mkdir(parents=True)
+            (root / "src" / MODULE / "__init__.py").write_text('__version__ = "99.0.0"\n', encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "module version"):
+                release.project_identity(root)
 
     def test_rejects_local_credentials_and_generated_images(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -163,6 +283,17 @@ class DistributionTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Non-regular"):
                 release.validate_sdist(sdist, NAME, MODULE, VERSION)
 
+    def test_rejects_non_regular_wheel_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            wheel = make_wheel(Path(directory))
+            with zipfile.ZipFile(wheel, "a") as archive:
+                fifo = zipfile.ZipInfo(f"{MODULE}/pipe.py")
+                fifo.create_system = 3
+                fifo.external_attr = (stat.S_IFIFO | 0o600) << 16
+                archive.writestr(fifo, b"")
+            with self.assertRaisesRegex(ValueError, "Non-regular wheel"):
+                release.validate_wheel(wheel, NAME, MODULE, VERSION)
+
     def test_rejects_wrong_version_and_nonportable_wheel(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -176,9 +307,11 @@ class DistributionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "pyproject.toml").write_text(f'[project]\nname="{NAME}"\nversion="{VERSION}"\n', encoding="utf-8")
+            (root / "src" / MODULE).mkdir(parents=True)
+            (root / "src" / MODULE / "__init__.py").write_bytes(MODULE_INIT)
             (root / "LICENSE").write_bytes(LICENSE)
             (root / "docs").mkdir()
-            (root / "docs" / "INSTALL.md").write_text("Install the local wheel.\n", encoding="utf-8")
+            (root / "docs" / "INSTALL.md").write_text("Use [the example](../examples/codex-uvx.toml).\n", encoding="utf-8")
             (root / "examples").mkdir()
             (root / "examples" / "codex-uvx.toml").write_text('command="uv"\n', encoding="utf-8")
             destination = root / "dist"
@@ -205,6 +338,8 @@ class DistributionTests(unittest.TestCase):
                     "INSTALL.md", "codex-uvx.toml", "LICENSE", "SHA256SUMS",
                 })
                 self.assertEqual(archive.read("LICENSE"), LICENSE)
+                self.assertIn(b"(codex-uvx.toml)", archive.read("INSTALL.md"))
+                self.assertNotIn(b"../examples/", archive.read("INSTALL.md"))
                 for line in archive.read("SHA256SUMS").decode().splitlines():
                     digest, filename = line.split("  ")
                     self.assertEqual(digest, hashlib.sha256(archive.read(filename)).hexdigest())
@@ -213,6 +348,8 @@ class DistributionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "pyproject.toml").write_text(f'[project]\nname="{NAME}"\nversion="{VERSION}"\n', encoding="utf-8")
+            (root / "src" / MODULE).mkdir(parents=True)
+            (root / "src" / MODULE / "__init__.py").write_bytes(MODULE_INIT)
             (root / "LICENSE").write_bytes(LICENSE)
             (root / "docs").mkdir()
             (root / "docs" / "INSTALL.md").touch()

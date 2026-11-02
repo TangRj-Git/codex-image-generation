@@ -6,7 +6,6 @@ on:
       tag:
         description: Published GitHub Release tag to upload to PyPI
         required: true
-        default: v0.3.0
         type: string
 
 permissions:
@@ -110,19 +109,43 @@ jobs:
           for name in (wheel_name, sdist_name):
               shutil.copyfile(downloads / name, output / name)
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as handle:
-              handle.write(f"version={version}\n")
+              handle.write(f"version={version}\nsource_sha={target['sha']}\n")
           print(f"Verified original {tag} release files at {target['sha']}")
           PY
       - name: Check PyPI metadata
         run: uvx --from twine twine check --strict dist/pypi/*
-      - name: Verify uvx with the exact wheel to be published
+      - name: Check out the release source for its matching installation contract
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.release.outputs.source_sha }}
+          path: release-source
+          persist-credentials: false
+      - name: Verify the exact wheel with the release's installation contract
+        working-directory: release-source
         env:
           RELEASE_VERSION: ${{ steps.release.outputs.version }}
         run: |
           uv sync --locked
-          uv run --locked python -B scripts/smoke_uvx.py \
-            --package "dist/pypi/codex_image_generation-${RELEASE_VERSION}-py3-none-any.whl" \
-            --expected-version "$RELEASE_VERSION"
+          uv run --locked python - <<'PY'
+          # RELEASE_INSTALLATION_CHECK
+          import os
+          from pathlib import Path
+          import subprocess
+          import sys
+
+          version = os.environ["RELEASE_VERSION"]
+          wheel = Path(os.environ["GITHUB_WORKSPACE"]) / "dist" / "pypi" / f"codex_image_generation-{version}-py3-none-any.whl"
+          if not wheel.is_file():
+              raise SystemExit("The verified release wheel is missing")
+          if Path("scripts/smoke_uvx.py").is_file():
+              command = [sys.executable, "-B", "scripts/smoke_uvx.py", "--package", str(wheel), "--expected-version", version]
+          elif Path("scripts/smoke_wheel.py").is_file():
+              print("::notice::This tag predates the uvx verifier; running its original wheel/MCP check. uvx is not validated by this fallback.")
+              command = [sys.executable, "-B", "scripts/smoke_wheel.py", "--wheel", str(wheel)]
+          else:
+              raise SystemExit("The release source has no supported installation verifier")
+          subprocess.run(command, check=True)
+          PY
       - uses: actions/upload-artifact@v4
         with:
           name: pypi-distributions

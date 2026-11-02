@@ -12,11 +12,11 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping
 from urllib.parse import urlsplit
 
-from openai import APIConnectionError, APIStatusError, APITimeoutError, AsyncOpenAI, OpenAIError
+from openai import APIConnectionError, APIError, APIStatusError, APITimeoutError, AsyncOpenAI, OpenAIError
 
 from .errors import ImageToolError
 from .model_selection import select_models, validate_model_options
-from .model_catalog import model_id
+from .model_catalog import image_capabilities, model_id
 from .provider import client_options, request_headers as _request_headers
 from .storage import (
     MAX_INPUT_BYTES, MAX_OUTPUT_BYTES, GeneratedImage, ImageInfo, PreparedImage,
@@ -345,19 +345,25 @@ class _State:
                 if not isinstance(parts, (list, tuple)):
                     continue
                 for part in parts:
-                    if _get(part, "type") == "output_text":
-                        part_text = _get(part, "text")
+                    part_type = _get(part, "type")
+                    if part_type in {"output_text", "refusal"}:
+                        part_text = _get(part, "refusal" if part_type == "refusal" else "text")
                         if isinstance(part_text, str) and remaining > 0:
                             fragment = part_text[:remaining]
                             text_parts.append(fragment)
                             remaining -= len(fragment)
         # A credential can span adjacent output_text blocks.
-        self.result.text = text or self.text("".join(text_parts)) or self.result.text
+        self.result.text = self.text("".join(text_parts)) or text or self.result.text
         if terminal:
             self.terminal = True
             status = _get(response, "status")
-            if status not in {None, "completed"}:
-                self.error("response_incomplete", "上游响应未完整完成；已完成且有效的图片仍会保存。")
+            failure = _get(response, "error")
+            if status not in {None, "completed"} or failure is not None:
+                details = _error_details(failure, self)
+                reason = self.identifier(_get(_get(response, "incomplete_details"), "reason"))
+                if reason:
+                    details["incomplete_reason"] = reason
+                self.error("response_incomplete", "上游响应未完整完成；已完成且有效的图片仍会保存。", **details)
 
     def accept_decoded(self, value: tuple[list[PreparedImage], list[dict[str, Any]], list[str]]) -> None:
         self.prepared, errors, warnings = value
@@ -473,11 +479,21 @@ async def _consume_stream(stream: Any, state: _State, on_progress: ProgressCallb
                 state.response(_get(event, "response"), terminal=True)
                 if event_type != "response.completed" and not state.result.errors:
                     state.error("response_incomplete", "上游响应未完整完成；已完成图片仍会保存。")
+                if event_type == "response.completed":
+                    await _notify(on_progress, {"stage": "completed"}, state)
                 break
             elif event_type == "error":
-                state.error("upstream_error", "上游流式请求报告错误；已完成图片仍会保存。")
+                state.error("upstream_error", "上游流式请求报告错误；已完成图片仍会保存。",
+                            **_error_details(_get(event, "error", event), state))
             elif event_type in {"response.image_generation_call.in_progress", "response.image_generation_call.generating"}:
                 await _notify(on_progress, {"stage": event_type.rsplit(".", 1)[-1], "item_id": state.identifier(_get(event, "item_id"))}, state)
+    except (APITimeoutError, APIStatusError) as exc:
+        _record_failure(state, exc)
+    except APIConnectionError:
+        state.error("stream_interrupted", "图片流发生连接错误，已完成图片仍会保存；未自动重试。")
+    except APIError as exc:
+        # The SDK raises APIError before yielding SSE records containing `error`.
+        _record_failure(state, exc)
     except Exception:
         state.error("stream_interrupted", "图片流发生连接或协议错误，已完成图片仍会保存；未自动重试。")
     finally:
@@ -491,7 +507,7 @@ async def _consume_stream(stream: Any, state: _State, on_progress: ProgressCallb
                 except asyncio.CancelledError:
                     await _settle(task)
                     raise
-    if not state.terminal and not any(error["code"] == "stream_interrupted" for error in state.result.errors):
+    if not state.terminal and not any(error["code"] in {"stream_interrupted", "timeout", "upstream_error"} for error in state.result.errors):
         state.error("stream_interrupted", "图片流在完整终态前结束，已完成图片仍会保存；未自动重试。")
 
 
@@ -514,6 +530,10 @@ def _record_failure(state: _State, error: Exception) -> None:
         state.error(code, message, http_status=status, **_error_details(details, state))
     elif isinstance(error, APIConnectionError):
         state.error("connection_error", "上游连接中断或不可达；已完成图片会尽量保存，未自动重试。")
+    elif isinstance(error, APIError):
+        body = getattr(error, "body", None)
+        state.error("upstream_error", "上游请求报告错误；已完成图片会尽量保存，未自动重试。",
+                    **_error_details(_get(body, "error", body), state))
     elif isinstance(error, OpenAIError):
         state.error("sdk_error", "上游 SDK 请求失败，请检查接口兼容性。")
     else:
@@ -590,8 +610,16 @@ async def generate(
                     state.warn(warning)
                 if selected.image_model is not None:
                     tool["model"] = selected.image_model
-                validate_model_options(selected.image_model, tool)
-                if tool.get("size") not in {None, "auto"}:
+                try:
+                    validate_model_options(selected.image_model, tool)
+                except ImageToolError as exc:
+                    # The selected model explains why an otherwise valid option failed.
+                    # Keep that provenance in the result instead of losing it in the
+                    # MCP adapter's minimal preflight error response.
+                    state.error("invalid_request", state.text(str(exc)))
+                    return state.result
+                known_dimensions = selected.image_model and image_capabilities(selected.image_model).get("custom_size")
+                if known_dimensions and tool.get("size") not in {None, "auto"}:
                     width, height = (int(value) for value in tool["size"].split("x"))
                     if width * height > 2560 * 1440:
                         state.warn("请求尺寸超过 2560×1440 像素面积；官方将这一范围标为实验性支持。")

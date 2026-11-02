@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from codex_image_generation.config import get_launch_settings, resolve_config
+from codex_image_generation.config import MAX_CONFIG_BYTES, _merge, get_launch_settings, resolve_config
 from codex_image_generation.errors import ImageToolError
 
 
@@ -29,6 +29,45 @@ class ConfigTests(unittest.TestCase):
 
     def launch(self, env=None, **kwargs):
         return get_launch_settings(environ=env or {}, codex_home=self.home, **kwargs)
+
+    def test_deep_profile_merge_is_iterative_and_preserves_sources(self):
+        base, overlay = {}, {}
+        left, right = base, overlay
+        for _ in range(1200):
+            left["nested"], right["nested"] = {}, {}
+            left, right = left["nested"], right["nested"]
+        left["value"], right["value"] = "old", "new"
+        merged = _merge(base, overlay)
+        for _ in range(1200):
+            merged = merged["nested"]
+        self.assertEqual(merged["value"], "new")
+        self.assertEqual(left["value"], "old")
+
+    def test_deep_configuration_or_auth_is_a_safe_diagnostic(self):
+        self.config("value=" + "[" * 2000 + "1" + "]" * 2000)
+        with self.assertRaises(ImageToolError):
+            self.resolve()
+        self.openai()
+        (self.home / "auth.json").write_text('{"secret":"private-value","nested":' + "[" * 2000 + "0" + "]" * 2000 + "}", encoding="utf-8")
+        with self.assertRaises(ImageToolError) as raised:
+            self.resolve()
+        self.assertNotIn("private-value", str(raised.exception))
+
+    def test_oversized_configuration_and_auth_are_rejected_before_parsing(self):
+        self.config("#" + "x" * MAX_CONFIG_BYTES)
+        with self.assertRaisesRegex(ImageToolError, "1 MiB"):
+            self.resolve()
+        self.openai()
+        (self.home / "auth.json").write_bytes(b" " * (MAX_CONFIG_BYTES + 1))
+        with self.assertRaisesRegex(ImageToolError, "1 MiB"):
+            self.resolve()
+
+    def test_configuration_directory_is_not_opened_as_a_file(self):
+        (self.home / "config.toml").mkdir()
+        with patch("codex_image_generation.local_files.os.open") as open_file:
+            with self.assertRaises(ImageToolError):
+                self.resolve()
+        open_file.assert_not_called()
 
     def provider(self, extra="", token=True, model="configured-model",
                  url="https://relay.example/v1"):

@@ -14,7 +14,10 @@ from typing import Any
 from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
 from .errors import ImageToolError
+from .local_files import read_regular_bytes
+from .model_catalog import model_id
 
+MAX_CONFIG_BYTES = 1024 * 1024
 _PROFILE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z")
 _ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 _HEADER_NAME = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+\Z")
@@ -45,7 +48,7 @@ class ResolvedConfig:
         """Expose configuration metadata, not secrets or proof of a session model."""
         parsed = urlsplit(self.base_url)
         netloc = parsed.netloc.rsplit("@", 1)[-1]
-        return {
+        metadata = {
             "provider": self.provider,
             "base_url": urlunsplit((parsed.scheme, netloc, parsed.path, "", "")),
             "model": self.model,
@@ -60,6 +63,32 @@ class ResolvedConfig:
             "image_model_override": self.image_model,
             "model_selection_policy": self.model_policy,
         }
+        return {name: redact_connection_text(self, value) if isinstance(value, str) else value
+                for name, value in metadata.items()}
+
+
+def credential_values(config: ResolvedConfig) -> tuple[str, ...]:
+    """Private connection values, excluding known non-secret routing controls."""
+    values = [config.api_key]
+    public_headers = {"accept", "accept-encoding", "content-type", "user-agent", "x-model"}
+    public_query = {"api-version", "api_version", "model", "max_tokens", "max_output_tokens",
+                    "stream", "temperature", "top_p", "seed", "timeout"}
+    for mapping, public_names in ((config.headers, public_headers), (config.query_params, public_query)):
+        for name, value in mapping.items():
+            if name.lower() not in public_names:
+                values.append(value)
+                if name.lower().endswith("authorization") and value.lower().startswith(("bearer ", "basic ")):
+                    values.append(value.split(None, 1)[1])
+    return tuple(sorted({value for value in values if isinstance(value, str) and value}, key=len, reverse=True))
+
+
+def redact_connection_text(config: ResolvedConfig, value: str) -> str:
+    for secret in credential_values(config):
+        if len(secret) >= 6:
+            value = value.replace(secret, "[redacted]")
+        elif value == secret:
+            return "[redacted]"
+    return value
 
 
 def _text(value: Any, label: str) -> str:
@@ -93,7 +122,7 @@ def _home(env: Mapping[str, str], codex_home: Path | None) -> Path:
     value = codex_home if codex_home is not None else _env_text(env, "CODEX_HOME")
     try:
         return (Path(value).expanduser() if value is not None else Path.home() / ".codex").resolve()
-    except (OSError, ValueError, TypeError):
+    except (OSError, ValueError, TypeError, RuntimeError):
         raise ImageToolError("Cannot resolve the Codex configuration directory.") from None
 
 
@@ -110,25 +139,45 @@ def _model_policy(env: Mapping[str, str]) -> str:
     return value
 
 
+def get_model_preferences(*, environ: Mapping[str, str] | None = None,
+                          include_responses: bool = True, include_images: bool = True,
+                          policy: str | None = None) -> dict[str, Any]:
+    """Read model preferences without loading provider settings or credentials."""
+    env = os.environ if environ is None else environ
+    policy_env = env if policy is None else {**env, "CODEX_IMAGE_MODEL_POLICY": policy}
+    preferences: dict[str, Any] = {"model_policy": _model_policy(policy_env)}
+    for name, variable in (("responses_model", "CODEX_IMAGE_RESPONSES_MODEL"), ("image_model", "CODEX_IMAGE_MODEL")):
+        relevant = include_responses if name == "responses_model" else include_images
+        value = _env_text(env, variable) if relevant else None
+        if value is not None and model_id(value) is None:
+            raise ImageToolError(f"{variable} must be a valid model ID of at most 200 characters.")
+        preferences[name] = value
+    return preferences
+
+
 def _read_toml(path: Path, *, required: bool) -> dict[str, Any]:
     try:
-        with path.open("rb") as handle:
-            return tomllib.load(handle)
+        return tomllib.loads(read_regular_bytes(path, MAX_CONFIG_BYTES).decode("utf-8"))
     except FileNotFoundError:
         if not required:
             return {}
         raise ImageToolError("The selected Codex profile file does not exist.") from None
-    except (OSError, ValueError):
-        raise ImageToolError("Cannot read or parse the Codex TOML configuration; check the file locally.") from None
+    except (OSError, ValueError, RecursionError):
+        raise ImageToolError("Cannot read or parse the Codex TOML configuration; use a regular UTF-8 file no larger than 1 MiB and check it locally.") from None
 
 
 def _merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
     result = dict(base)
-    for key, value in overlay.items():
-        if isinstance(value, dict) and isinstance(result.get(key), dict):
-            result[key] = _merge(result[key], value)
-        else:
-            result[key] = value
+    pending = [(result, overlay)]
+    while pending:
+        target, additions = pending.pop()
+        for key, value in additions.items():
+            if isinstance(value, dict) and isinstance(target.get(key), dict):
+                nested = dict(target[key])
+                target[key] = nested
+                pending.append((nested, value))
+            else:
+                target[key] = value
     return result
 
 
@@ -256,6 +305,7 @@ def get_launch_settings(*, environ: Mapping[str, str] | None = None,
                         profile: str | None = None) -> dict[str, Any]:
     """Describe child-process configuration without reading or requiring credentials."""
     env = os.environ if environ is None else environ
+    get_model_preferences(environ=env)
     home = _home(env, codex_home)
     config, _, selected_profile = _load_config(home, env, profile)
     name, provider = _provider(config)
@@ -301,12 +351,11 @@ def _auth_file_key(home: Path, config: dict[str, Any]) -> tuple[str, str]:
     if store != "file":
         raise ImageToolError("The selected Codex credential storage mode is not supported by this server.")
     try:
-        with (home / "auth.json").open("r", encoding="utf-8") as handle:
-            auth = json.load(handle)
+        auth = json.loads(read_regular_bytes(home / "auth.json", MAX_CONFIG_BYTES).decode("utf-8"))
     except FileNotFoundError:
         raise ImageToolError("No reusable API key was found. Configure API-key authentication for the selected Codex provider; ChatGPT OAuth, OS keyring, and ephemeral credentials are not supported.") from None
-    except (OSError, ValueError):
-        raise ImageToolError("Cannot read or parse Codex auth.json; inspect the file locally without sharing its contents.") from None
+    except (OSError, ValueError, RecursionError):
+        raise ImageToolError("Cannot read or parse Codex auth.json; use a regular UTF-8 file no larger than 1 MiB and inspect it locally without sharing its contents.") from None
     if not isinstance(auth, dict):
         raise ImageToolError("Codex auth.json must contain an authentication object.")
     mode = auth.get("auth_mode")
@@ -381,9 +430,14 @@ def _credentials(name: str, provider: dict[str, Any], headers: dict[str, str],
 def resolve_config(current_model: str | None = None, *,
                    environ: Mapping[str, str] | None = None,
                    codex_home: Path | None = None, profile: str | None = None,
-                   require_model: bool = True) -> ResolvedConfig:
+                   require_model: bool = True, responses_model: str | None = None,
+                   image_model: str | None = None, model_policy: str | None = None,
+                   include_image_preferences: bool = True) -> ResolvedConfig:
     """Resolve only the caller's known model and the selected user's Codex settings."""
     env = os.environ if environ is None else environ
+    overrides = {name: value for name, value in (("CODEX_IMAGE_RESPONSES_MODEL", responses_model),
+                 ("CODEX_IMAGE_MODEL", image_model), ("CODEX_IMAGE_MODEL_POLICY", model_policy)) if value is not None}
+    irrelevant = set(overrides) | ({"CODEX_IMAGE_MODEL"} if not include_image_preferences else set())
     home = _home(env, codex_home)
     config, config_path, _ = _load_config(home, env, profile)
     if current_model is not None:
@@ -413,7 +467,6 @@ def resolve_config(current_model: str | None = None, *,
         base_url=base_url, api_key=api_key, headers=headers, query_params=query,
         model=model, provider=name, model_source=model_source, credential_source=credential_source,
         config_path=config_path, request_timeout=_timeout(env),
-        required_env_vars=_required_env(env, name, provider, codex_home=codex_home, profile=profile),
-        responses_model=_env_text(env, "CODEX_IMAGE_RESPONSES_MODEL"),
-        image_model=_env_text(env, "CODEX_IMAGE_MODEL"), model_policy=_model_policy(env),
+        required_env_vars=_required_env({key: value for key, value in env.items() if key not in irrelevant}, name, provider, codex_home=codex_home, profile=profile),
+        **get_model_preferences(environ={**env, **overrides}, include_images=include_image_preferences),
     )

@@ -29,7 +29,7 @@ git diff --check
 uv run --frozen python scripts/build_release.py
 ```
 
-脚本调用 `uv build`，在临时目录构建并检查 wheel、源码包内容，随后写入 `dist/`。只更新当前版本的同名产物，不清空整个目录。
+脚本先核对 `project.version` 与源码 `__version__`，再调用 `uv build`，在临时目录构建并检查 wheel、源码包内容，随后写入 `dist/`。校验还包含包内版本、源码 README 引用，以及 Windows 保留名和 Unicode 规范化后的路径冲突。只更新当前版本的同名产物，不清空整个目录。
 
 0.3.0 的主要产物：
 
@@ -37,6 +37,8 @@ uv run --frozen python scripts/build_release.py
 - `codex_image_generation-0.3.0.tar.gz`：源码发行包。
 - `codex-image-generation-0.3.0.zip`：GitHub Release 归档，含 wheel、源码包、安装说明、MIT 许可证、MCP 配置示例和内部校验和。
 - `SHA256SUMS-0.3.0.txt`：外部 SHA-256 校验文件，校验 wheel、源码包和 ZIP。
+
+未发布改动的本地验证建议使用独立目录，例如 `uv run --locked python scripts/build_release.py --out-dir dist/local-check`，避免与已保存的正式发行文件混淆。ZIP 中的安装说明和示例位于同一层，构建时会调整对应的相对链接。ZIP 是发行归档；其 `@latest` 接入方式只会安装 PyPI 上已有的版本。
 
 `py3-none-any` 表示本项目 wheel 没有平台专用二进制扩展，不表示全部依赖支持任意操作系统。uv 会为使用者的平台安装相应依赖。
 
@@ -91,7 +93,9 @@ git push origin v0.3.0
 
 用户配置见 `examples/codex-uvx.toml`，启动命令为 `uvx codex-image-generation@latest`，不固定包版本和 Python 版本。ZIP 保留作发行归档，其安装说明和配置示例也采用这一入口。
 
-PyPI 发布使用 `.github/workflows/publish-pypi.yml`（GitHub Actions 中显示为 **Publish to PyPI**），只在默认分支手动运行。它下载已经公开的 GitHub Release 原始 wheel 和源码包，核对 GitHub 提供的 SHA-256 与 Release 校验清单、包名、版本和许可证，确认标签提交有成功 CI，并验证 `uvx` 的 CLI 与 MCP stdio 后上传。ZIP 和校验清单保留在 GitHub Release，不上传到 PyPI。
+PyPI 发布使用 `.github/workflows/publish-pypi.yml`（GitHub Actions 中显示为 **Publish to PyPI**），只在默认分支手动运行，必须填写本次标签。它下载已经公开的 GitHub Release 原始 wheel 和源码包，核对 GitHub 提供的 SHA-256 与 Release 校验清单、包名、版本和许可证，确认标签提交有成功 CI，再使用该标签对应的源码检查脚本和锁定依赖验证精确 wheel。这样不会用默认分支的新接口要求误判旧发行包。ZIP 和校验清单保留在 GitHub Release，不上传到 PyPI。
+
+安装验证优先运行标签中的 `scripts/smoke_uvx.py`。历史标签没有该脚本时，运行同一标签中的 `scripts/smoke_wheel.py`，验证其原有 CLI 和 MCP 契约；两者都不存在则明确停止。真实 `v0.3.0` 标签只有 wheel 验证脚本，因此这条兼容路径不会声称验证了 uvx。可复用的 Test and package 工作流测试旧 `source_ref` 时，也会在 wheel/MCP 检查通过后明确跳过缺失的 uvx 专项检查。
 
 首次发布时，登录 [PyPI Trusted Publisher Management](https://pypi.org/manage/account/publishing/)，添加 pending publisher：
 

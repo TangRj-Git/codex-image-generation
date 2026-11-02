@@ -156,9 +156,11 @@ class SavePlan:
         try:
             # A replaced lock is no longer ours. Never clear another request's lock.
             identity = _identity(lock_path)
-            if identity != self._lock_identities.get(lock_path) or (
-                lock_path in self._complete_locks and lock_path.read_bytes() != token.encode("ascii")
-            ):
+            matches = identity == self._lock_identities.get(lock_path)
+            if matches and lock_path in self._complete_locks:
+                with lock_path.open("rb") as handle:
+                    matches = handle.read(len(token) + 1) == token.encode("ascii")
+            if not matches:
                 self._locks.pop(lock_path, None)
                 self._lock_identities.pop(lock_path, None)
                 self._complete_locks.discard(lock_path)
@@ -195,8 +197,10 @@ class SavePlan:
         # The cooperating request lock remains held after this empty probe is removed.
         with target.open("xb"):
             self._remember_temporary(target)
-        target.unlink()
-        self._temporary_paths.pop(target, None)
+        # Another process may replace the probe after close. Never delete its file.
+        self._cleanup_temporary(target)
+        if target.exists() or target.is_symlink():
+            raise FileExistsError(errno.EEXIST, "Destination was replaced or probe could not be removed")
 
     def _numbered_name(self, ordinal: int, actual_format: str | None = None) -> str:
         name = Path(self.filename)
@@ -229,13 +233,24 @@ class SavePlan:
             name = self._numbered_name(1, actual_format)
             target = self.output_dir / name
             if not target.exists() and not target.is_symlink():
+                extra_lock = None
                 try:
                     if name != self.filename:
+                        # A longer corrected extension may truncate the original stem,
+                        # giving this target a different reservation identity.
+                        if self._lock_path(name) not in self._locks:
+                            extra_lock = self._acquire(name)
                         self._probe_target(target)
                     return target
                 except FileExistsError:
+                    if extra_lock is not None:
+                        self._release_lock(extra_lock)
                     if name == self.filename:
                         raise
+                except BaseException:
+                    if extra_lock is not None:
+                        self._release_lock(extra_lock)
+                    raise
             elif name == self.filename:
                 raise FileExistsError(errno.EEXIST, "Reserved destination already exists")
             # A corrected-format destination may already exist; preserve it and
@@ -431,13 +446,30 @@ def inspect_image(data: bytes, *, input_image: bool = False) -> ImageInfo:
 
 def read_input_image(project_dir: Path, path: str) -> tuple[bytes, ImageInfo]:
     source = resolve_project_path(project_dir, path, label="参考图片路径")
+    descriptor = None
     try:
-        if source.stat().st_size >= MAX_INPUT_BYTES:
+        info = source.stat()
+        if not stat.S_ISREG(info.st_mode):
+            raise ImageToolError("参考图片或蒙版必须是普通文件，不能是目录、管道或设备。")
+        if info.st_size >= MAX_INPUT_BYTES:
             raise ImageToolError("参考图片或蒙版必须小于 50 MB。")
-        with source.open("rb") as stream:
+        # Recheck the opened object as well as the path. O_NONBLOCK prevents a
+        # replaced FIFO from trapping an uncancellable worker thread on POSIX.
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NONBLOCK", 0)
+        descriptor = os.open(source, flags)
+        opened = os.fstat(descriptor)
+        if not stat.S_ISREG(opened.st_mode):
+            raise ImageToolError("参考图片或蒙版必须是普通文件，不能是目录、管道或设备。")
+        if opened.st_size >= MAX_INPUT_BYTES:
+            raise ImageToolError("参考图片或蒙版必须小于 50 MB。")
+        with os.fdopen(descriptor, "rb") as stream:
+            descriptor = None  # Ownership transferred to the stream.
             data = stream.read(MAX_INPUT_BYTES)
     except OSError:
         raise ImageToolError("无法读取参考图片或蒙版，请检查路径及文件权限。") from None
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
     return data, inspect_image(data, input_image=True)
 
 

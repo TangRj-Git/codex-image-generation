@@ -4,6 +4,8 @@
 
 [PyPI](https://pypi.org/project/codex-image-generation/) · [安装与故障排查](https://github.com/TangRj-Git/codex-image-generation/blob/master/docs/INSTALL.md) · [工具参考](https://github.com/TangRj-Git/codex-image-generation/blob/master/docs/TOOLS.md)
 
+本文描述当前源码。`@latest` 安装的是已发布版本，未发布改动不会随 Git 源码更新自动生效；需要提前使用时，按[源码试用说明](https://github.com/TangRj-Git/codex-image-generation/blob/master/docs/INSTALL.md#试用本地源码)接入。
+
 ## 快速接入
 
 先安装 [uv](https://docs.astral.sh/uv/getting-started/installation/)，并准备好可用的 Codex 中转站配置。中转站需要支持 Responses API 的 `image_generation` 工具。
@@ -40,7 +42,7 @@ uvx codex-image-generation@latest --check
 
 `--check` 只检查本地配置，不请求中转站。`configured: true` 表示配置可解析；`connection_verified: false` 表示尚未验证上游连接，是正常结果。实际生成图片时会访问中转站，并可能产生费用。
 
-查看模型目录（只查询列表和文档，不生成图片）：
+包含模型发现功能的版本可以查看模型目录（只查询列表和文档，不生成图片；命中新鲜缓存时不联网）：
 
 ```sh
 uvx codex-image-generation@latest --list-models
@@ -78,7 +80,7 @@ MCP 的说明会提示宿主复用已有技能的通用工作流程；技能加�
 
 - URL 和认证使用已有 Codex provider。对话模型写入顶层 `model`，图像模型写入 `tools[].model`；图像型号无需出现在中转站 `/models` 中。
 - 默认自动选择；`responses_model`、`image_model` 可固定本次型号，`model_policy=fast` 可优先速度。`image_model=upstream_default` 显式沿用上游图像路由。
-- 中转站列表不可用或没有可推荐型号时，回退到可靠的 `current_model` 或 Codex 配置中的 `model`。普通 MCP 无法自行确认界面临时选择的模型。
+- 目录查询失败先考虑标记为过期的有效缓存；仍没有可推荐对话型号时，回退到可靠的 `current_model` 或 Codex 配置中的 `model`。普通 MCP 无法自行确认界面临时选择的模型。
 - 中转站列表缓存 5 分钟，官网目录缓存 24 小时；刷新失败会标明旧缓存或内置快照。推荐是有来源的选择策略，不是性能评测或中转站能力验证。
 - 返回结果分别显示请求选择的图像型号和对话型号。上游没有独立报告图像执行型号时保持未知；显式指定型号不证明中转站实际路由。
 - 包要求 Python 3.11 及以上，实际运行还取决于平台和依赖兼容性。uv 会管理 Python；首次安装和更新检查需要联网。

@@ -1,5 +1,5 @@
 name: 问题反馈
-description: 报告安装、配置、图片生成或文件保存问题
+description: 报告安装、配置、模型发现、图片生成或文件保存问题
 title: "[Bug] "
 body:
   - type: markdown
@@ -11,7 +11,7 @@ body:
     id: version
     attributes:
       label: 项目版本
-      description: 可通过 uvx codex-image-generation@latest --version 获取；请注明是否在更新前复现。
+      description: 填写实际运行版本；源码运行时附 git rev-parse --short HEAD。uvx 的 @latest 检查可能更新版本，请注明是否在更新前复现。
       placeholder: "0.3.0"
     validations:
       required: true

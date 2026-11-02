@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import errno
+import contextlib
 import io
 import os
+import stat
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from PIL import Image
@@ -356,6 +359,51 @@ class StorageTests(unittest.TestCase):
         self.assertEqual(target.read_bytes(), b"created outside this server")
         plan.release()
         self.assertEqual(target.read_bytes(), b"created outside this server")
+
+    def test_probe_does_not_delete_a_file_replaced_by_another_process(self):
+        target = self.cwd / "race.png"
+        original_probe = self.cwd / "probe-moved-away"
+        original_open = Path.open
+
+        @contextlib.contextmanager
+        def replace_after_close(path, *args, **kwargs):
+            with original_open(path, *args, **kwargs) as stream:
+                yield stream
+            if path == target and args and args[0] == "xb":
+                path.rename(original_probe)
+                path.write_bytes(b"another process owns this file")
+
+        with patch.object(Path, "open", replace_after_close), self.assertRaises(ImageToolError):
+            prepare_save(str(self.cwd), filename=target.name)
+        self.assertEqual(target.read_bytes(), b"another process owns this file")
+        self.assertFalse(list(self.cwd.glob("*.lock")))
+
+    def test_corrected_extension_truncation_respects_the_new_stem_reservation(self):
+        other = self.plan(filename="abcdefg.webp")
+        plan = self.plan(filename="abcdefgh.png")
+        plan._name_limit = 12  # Simulate a filesystem name limit requiring stem truncation.
+        result = save_images(plan, [prepared("webp")])
+        self.assertEqual(len(result.images), 1)
+        self.assertNotEqual(result.images[0].path, self.cwd / "abcdefg.webp")
+        self.assertFalse((self.cwd / "abcdefg.webp").exists())
+        self.assertEqual(save_images(other, [prepared("webp")]).images[0].path, self.cwd / "abcdefg.webp")
+
+    def test_reference_special_files_are_rejected_without_opening(self):
+        for mode in (stat.S_IFIFO, stat.S_IFCHR, stat.S_IFDIR, stat.S_IFSOCK):
+            with self.subTest(mode=mode), patch.object(Path, "stat", return_value=SimpleNamespace(st_mode=mode, st_size=0)), patch.object(
+                storage.os, "open", side_effect=AssertionError("special file must not be opened"),
+            ), self.assertRaises(ImageToolError):
+                read_input_image(self.cwd, str(self.cwd / "special-input"))
+
+    def test_reference_opened_file_is_rechecked_and_descriptor_closed(self):
+        source = self.cwd / "source.png"
+        source.write_bytes(image_bytes())
+        real_close = os.close
+        with patch.object(storage.os, "fstat", return_value=SimpleNamespace(st_mode=stat.S_IFIFO, st_size=0)), patch.object(
+            storage.os, "fdopen", side_effect=AssertionError("replaced special file must not be read"),
+        ), patch.object(storage.os, "close", wraps=real_close) as close, self.assertRaises(ImageToolError):
+            read_input_image(self.cwd, str(source))
+        close.assert_called_once()
 
     def test_later_write_failure_keeps_successful_images(self):
         plan = self.plan(filename="asset.png")

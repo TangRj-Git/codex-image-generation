@@ -39,7 +39,10 @@ def main() -> None:
     if (options.refresh_models or options.model_policy) and not (options.list_models or options.list_image_models):
         parser.error("--refresh-models and --model-policy require --list-models or --list-image-models")
     if options.codex_home is not None:
-        os.environ["CODEX_HOME"] = str(Path(options.codex_home).expanduser().resolve())
+        try:
+            os.environ["CODEX_HOME"] = str(Path(options.codex_home).expanduser().resolve())
+        except (OSError, ValueError, RuntimeError):
+            parser.error("Cannot resolve --codex-home; provide a valid configuration directory.")
     if options.profile is not None:
         os.environ["CODEX_IMAGE_PROFILE"] = options.profile
 
@@ -72,9 +75,12 @@ def main() -> None:
     from .server import configuration_status, list_image_models, list_models, mcp
 
     if options.list_models or options.list_image_models:
+        from fastmcp.tools import ToolResult
         listing = (list_models(refresh=options.refresh_models, model_policy=options.model_policy)
-                   if options.list_models else list_image_models(refresh=options.refresh_models, model_policy=options.model_policy or "quality"))
+                   if options.list_models else list_image_models(refresh=options.refresh_models, model_policy=options.model_policy))
         result = asyncio.run(listing)
+        if isinstance(result, ToolResult):
+            result = result.structured_content
         print(json.dumps(result, ensure_ascii=False, indent=2))
         if result.get("error") or result.get("source") == "unavailable":
             raise SystemExit(1)

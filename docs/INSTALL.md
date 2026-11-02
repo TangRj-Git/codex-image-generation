@@ -52,7 +52,7 @@ uvx codex-image-generation@latest --check
 | `model_selection_policy` | 自动选择偏好，默认 `quality` |
 | `session_model_auto_detection: false` | 普通 MCP 无法自行确认 Codex 界面的临时模型选择 |
 
-可以先查看模型目录；这些命令会联网，但不会生成图片：
+包含模型发现功能的版本可以先查看模型目录；这些命令在需要刷新时联网，不会生成图片：
 
 ```sh
 uvx codex-image-generation@latest --list-models
@@ -61,7 +61,9 @@ uvx codex-image-generation@latest --list-models --refresh-models
 uvx codex-image-generation@latest --list-image-models --model-policy fast
 ```
 
-`--list-image-models` 不需要 provider 凭据。`--list-models` 使用当前中转站认证，只返回对话模型候选和单独的未分类别名。`provider_tool_support_verified: false` 表示列表查询不证明图像工具可执行。列表不可获取时 CLI 返回非零状态，生成仍可使用显式或已有配置中的对话型号。
+`--list-image-models` 不需要 provider 凭据，只读取图像相关偏好。两个列表命令在省略 `--model-policy` 时均继承 `CODEX_IMAGE_MODEL_POLICY`，未设置时使用 `quality`。图像列表同时显示环境中固定的 `image_model_override`。`--list-models` 使用当前中转站认证，只返回对话模型候选和单独的未分类别名。`provider_tool_support_verified: false` 表示列表查询不证明图像工具可执行。
+
+列表不可获取时，CLI 仍输出 JSON 并返回非零状态，MCP 返回 `isError=true`；存在有效旧缓存时返回 `partial_success` 和原更新时间。生成仍可使用显式或已有配置中的对话型号。无法依据目录区分最优候选时，`recommended_model` 可以为空，用户可手动指定。
 
 然后在 Codex 中提出生成需求，例如：
 
@@ -87,14 +89,27 @@ env_vars = ["MY_RELAY_KEY"]
 | --- | --- |
 | `CODEX_HOME` | 自定义 Codex 配置目录 |
 | `CODEX_IMAGE_PROFILE` | 选择已有 profile |
-| `CODEX_IMAGE_TIMEOUT` | 上游请求超时秒数，默认 300，范围大于 0 且不超过 3600 |
+| `CODEX_IMAGE_TIMEOUT` | 单次生成的总时间预算，包含本地准备、模型发现、上游请求和图片处理；默认 300 秒，范围 `(0, 3600]` |
 | `CODEX_IMAGE_RESPONSES_MODEL` | 固定顶层对话型号，覆盖自动选择 |
 | `CODEX_IMAGE_MODEL` | 固定图像型号；`upstream_default` 显式使用上游默认路由 |
 | `CODEX_IMAGE_MODEL_POLICY` | 自动推荐策略：`quality`（默认）或 `fast` |
 
 配置检查和 MCP 启动应使用同一份配置及 profile。请求超时超过 300 秒时，相应调大 `tool_timeout_sec`，为本地图片处理留出余量。
 
-模型缓存位于所选 Codex 配置目录的 `cache/image-generation/`，不存储认证值。对话列表有效期 5 分钟，官方目录有效期 24 小时；刷新失败使用旧缓存或标注日期的内置目录。`--refresh-models` 用于主动刷新，不能单独作为服务启动参数。
+`config.toml`、独立 profile 文件和 `auth.json` 的读取目标必须是普通文件，每个文件上限为 **1 MiB（1,048,576 字节）**。目录、管道、设备及超限文件会被拒绝；过深而无法解析的 TOML/JSON 会返回安全诊断。遇到读取错误时，请在本地检查文件类型、大小和格式，不要公开粘贴完整配置或认证文件。
+
+模型偏好也可以直接放在已有 MCP 表的 `env` 子表中，无需修改整个 Codex 会话的模型：
+
+```toml
+[mcp_servers.image_generation.env]
+CODEX_IMAGE_RESPONSES_MODEL = "gpt-6-astra"
+CODEX_IMAGE_MODEL = "gpt-image-2.5-sunburst"
+CODEX_IMAGE_MODEL_POLICY = "quality"
+```
+
+这些示例值是可选固定偏好；希望自动选择时省略对应型号。`env` 已直接提供的变量无需再放进 `env_vars`，现有 provider 凭据的转发方式保持不变。
+
+模型缓存位于所选 Codex 配置目录的 `cache/image-generation/`，不存储认证值。单个缓存文件上限为 **1,000,000 字节**，读取目标也必须是普通文件；不满足约束的缓存按无效缓存处理。对话列表有效期 5 分钟，官方目录有效期 24 小时；刷新失败后退避 60 秒，并可使用明确标记为过期的旧缓存或标注日期的内置目录。旧缓存不代表中转站现在仍支持对应型号。`--refresh-models` 绕过退避主动刷新，不能单独作为服务启动参数。
 
 ## 自动更新与旧配置迁移
 
@@ -105,6 +120,31 @@ env_vars = ["MY_RELAY_KEY"]
 当前 CLI 的 `--print-config` 输出会指向执行时的 Python 环境；通过 `uvx` 运行时，这可能是缓存目录。使用本文的 `command = "uvx"` 配置即可在缓存清理后重新准备环境，无需保存缓存 Python 的路径。
 
 如需停用，移除对应 MCP 配置并重启 Codex。`uvx` 的环境缓存可以保留，无需另外卸载一个全局 Python 包。
+
+## 试用本地源码
+
+README 和工具参考跟随当前源码，可能包含尚未发布到 PyPI 的功能。`@latest` 不会读取你的本地提交；出现未知 CLI 参数或缺少新工具时，先核对实际版本与 [CHANGELOG](https://github.com/TangRj-Git/codex-image-generation/blob/master/CHANGELOG.md)。
+
+在源码目录执行 `uv sync --locked`，再检查本地命令：
+
+```sh
+uv run --locked codex-image-generation --check
+uv run --locked codex-image-generation --list-models
+uv run --locked codex-image-generation --list-image-models
+```
+
+试用本地 MCP 时，把已有同名表的启动命令改为下面形式，将路径替换成源码目录的绝对路径，并保留自己需要的 `env_vars`、`env` 和 profile 设置：
+
+```toml
+[mcp_servers.image_generation]
+command = "uv"
+args = ["--directory", "/absolute/path/to/codex-image-generation", "run", "--locked", "codex-image-generation"]
+startup_timeout_sec = 120
+tool_timeout_sec = 360
+env_vars = []
+```
+
+Windows 路径可以写成 `E:/Projects/codex-image-generation`。重启 MCP 后生效；工具的输出目录仍由当前任务传入的 `cwd` 决定，不会因为服务从源码目录启动就改为源码目录。完成试用后可以恢复本文开头的已发布包配置。
 
 ## 常见问题
 

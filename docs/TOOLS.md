@@ -35,19 +35,29 @@ $imagegen 请使用系统自带的技能整理提示词、处理参考图并检�
 | 工具 | 参数 | 数据来源 |
 | --- | --- | --- |
 | `list_models` | `refresh=false`，可选 `model_policy=quality/fast` | 当前 provider 的 `/models`；官方工具指南用于标记图像工具支持情况 |
-| `list_image_models` | `refresh=false`，`model_policy=quality` 或 `fast` | OpenAI 官方图像工具指南及模型页；不读取 provider 凭据 |
+| `list_image_models` | `refresh=false`，可选 `model_policy=quality/fast` | OpenAI 官方图像工具指南及模型页；不读取 provider 凭据 |
 
-`list_models.models` 包含对话模型候选，排除明显的图像、音频和嵌入型号。标准 `/models` 没有完整的能力字段，名称推断项标为 `text_capability=inferred_from_id`；无法分类的别名放在 `unclassified_models`。只有官方工具指南列出的对话模型及已知日期快照参与自动推荐，推断项不会自动选中。
+`list_models` 返回的结构化 `models` 包含对话模型候选，排除明显的图像、音频和嵌入型号。标准 `/models` 没有完整的能力字段，名称推断项标为 `text_capability=inferred_from_id`；无法分类的别名放在 `unclassified_models`。只有官方工具指南列出的对话模型及已知日期快照参与自动推荐，推断项不会自动选中。
 
-返回 `recommended_model`、`recommendation_reason`、`source`、`fetched_at`（Unix 秒）、`stale` 和 `warnings`。`provider_tool_support_verified=false` / `provider_support_verified=false` 表示没有进行付费探测，官方支持不等于中转站已支持。
+两个列表工具的推荐策略均为本次 `model_policy` → `CODEX_IMAGE_MODEL_POLICY` → `quality`，显式参数覆盖环境偏好。列表只读取各自相关的型号偏好，无关的另一层型号设置不会阻断查询。图像列表通过 `image_model_override` 显示环境变量中的固定型号；推荐型号不覆盖用户已经固定的选择。
 
-官网解析分别读取正文开头的图像型号和 `Supported models` 中的顶层对话型号，过滤停用型号，并读取模型页的定位与快照。只有模型页实际列出的日期快照会继承对话型号的工具支持标记。`quality` 优先使用官方模型首页 Featured models 的当前旗舰定位、图像指南的明确推荐，再参考模型页能力描述及核对于 2026-11-02 的回退顺序；`fast` 优先明确速度定位。推荐不根据型号名称、列表顺序或创建时间推断性能，也不是通用性能评测。新型号没有充分定位信息时会标为 `unranked`，仍可手动选择。
+返回 `recommended_model`、`recommendation_reason`、`source`、`fetched_at`（Unix 秒）、`stale` 和 `warnings`。两个 MCP 列表工具均返回结构化结果和文本 JSON：不可获取目录时为 `status=error`、`isError=true`；旧缓存、内置回退或带警告的结果为 `status=partial_success`；完整正常结果为 `status=success`。CLI 保持 JSON 输出，不可获取目录时返回非零退出码。`provider_tool_support_verified=false` / `provider_support_verified=false` 表示没有进行付费探测，官方支持不等于中转站已支持。旧缓存会保留原更新时间，失败退避期间还会提供 `retry_after`（Unix 秒）。
 
-目录缓存位于所选 Codex 配置目录的 `cache/image-generation/`。中转站列表缓存 5 分钟，并按地址、凭据和租户上下文隔离；官方目录缓存 24 小时。缓存只存放模型目录和时间，不存凭据。`refresh=true` 强制刷新；失败时使用最后有效缓存，官网没有有效缓存则使用标明 2026-11-02 日期的内置快照。不会在每次生成时强制联网刷新目录。
+官网解析分别读取正文开头的图像型号和 `Supported models` 中的顶层对话型号，过滤停用型号，并读取模型页的定位与快照。只有模型页实际列出的有效日期快照会继承对话型号的工具支持标记。明确的停用记录会保留在目录中用于校验，并在读取缓存时按日期生效；若官网确认已无可用型号，不会用旧内置型号替代这一结果。
+
+`quality` 优先使用官方模型首页 Featured models 的当前旗舰定位、图像指南的明确推荐，再参考已核对的本地偏好；`fast` 使用有依据的速度偏好，不根据描述中偶然出现的 `fast` 字样加分，已知快照继承其别名的偏好。候选都没有速度依据时，保留完整质量排序并报告 `quality_fallback_no_speed_evidence`，不把质量得分截断后按名称选择。
+
+推荐不是全模型的客观性能排名，不根据型号名称、列表顺序或创建时间推断谁更强。新型号没有充分定位信息时标为 `unranked`；没有有依据的候选、或不同型号同分而无法区分时，`recommended_model` 可以为空。对话模型此时可使用已有配置回退；图像模型没有已固定选择时需显式指定。用户始终可以手动选择有效型号。
+
+目录缓存位于所选 Codex 配置目录的 `cache/image-generation/`。中转站列表缓存 5 分钟，并按地址、凭据和租户上下文隔离；官方目录缓存 24 小时。缓存只存放模型目录和时间，不存凭据。刷新失败后退避 60 秒，期间跳过重复的目录读取；`refresh=true` / `--refresh-models` 绕过退避并强制刷新。退避不会自动重试付费生成。
+
+刷新失败时可以使用最后有效缓存，包括中转站 `/models` 返回 403、404 或网络失败的情况；旧缓存没有固定最大保留期，必须结合 `stale`、原更新时间和警告理解，不能视为当前可用性的证明。官网没有有效缓存则使用标明日期的内置快照。目录在查询或生成时按需刷新，没有后台定时轮询，也不会在每次生成时强制联网刷新。
 
 对话模型选择顺序：本次 `responses_model` → `CODEX_IMAGE_RESPONSES_MODEL` → 中转站目录推荐 → 可靠的 `current_model` / Codex 配置 `model`。图像模型选择顺序：本次 `image_model` → `CODEX_IMAGE_MODEL` → 官网目录推荐。选择策略为本次 `model_policy` → `CODEX_IMAGE_MODEL_POLICY` → `quality`。
 
-两个型号都已明确指定时跳过发现。自定义别名可以显式指定，未知能力交给上游验证。`image_model="upstream_default"` 是本地兼容选项：省略 `tools[].model` 并标记图像型号未知；不会把此字符串发送为 API 模型名。上游拒绝型号后不会自动换型号重试。
+两个型号都已明确指定时不联网发现，但仍用内置规则和已有本地目录检查已知停用信息及模型层级。自定义别名可以显式指定，未知能力交给上游验证。自动选择应省略型号参数，不能把 `auto` 当成型号 ID；已知对话型号与图像型号放反、无效 ID 或包含已知认证值的名称会在请求前拒绝。
+
+`image_model="upstream_default"` 是本地兼容选项：省略 `tools[].model` 并标记图像型号未知；不会把此字符串发送为 API 模型名，也不能用于 `responses_model`。上游拒绝型号后不会自动换型号重试。
 
 ## 参数
 
@@ -127,7 +137,7 @@ $imagegen 请使用系统自带的技能整理提示词、处理参考图并检�
 ]
 ```
 
-`path` 支持绝对路径或相对 `cwd` 的路径；`detail` 可为 `auto`、`low`、`high`、`original`。HTTP(S) URL 直接交给上游，不在本地额外下载。
+`path` 支持绝对路径或相对 `cwd` 的路径；本地参考图和蒙版必须是普通文件，目录、管道和设备不会被作为图片读取。`detail` 可为 `auto`、`low`、`high`、`original`。HTTP(S) URL 直接交给上游，不在本地额外下载。
 
 `mask` 也是恰含 `path`、`image_url`、`file_id` 之一的对象，不接受 `detail`。优先使用本地文件、data URL 或 provider 文件 ID。可本地读取的蒙版会检查 alpha；首张参考图也可本地读取时，检查尺寸和格式是否匹配。远程内容由上游验证。
 
@@ -141,6 +151,7 @@ $imagegen 请使用系统自带的技能整理提示词、处理参考图并检�
 - 请求前校验目标目录并预留文件名；已有文件不覆盖。显式名称给第一张成功图片，后续图片编号。
 - 多张图片中某项失败时，其他成功文件仍保留；不因部分失败自动重复生成。
 - SDK 自动重试关闭。超时、断流等可能发生在上游已处理请求之后，应先核实状态再决定是否重试。
+- 超时或取消后，已开始的本地文件操作需要完成安全清理，因此实际返回时间可能略超出配置的时间预算。
 
 成功或已进入生成流程的结果含：
 
@@ -157,12 +168,16 @@ $imagegen 请使用系统自带的技能整理提示词、处理参考图并检�
 | `image_model_selected` / `image_model_source` | 请求选择的图像型号及来源；兼容模式下型号为空 |
 | `image_model_reported` / `image_model_evidence` | 标准结果没有独立图像型号报告，因此保持空值；证据为 `request_only` 或 `upstream_default_unknown` |
 | `model_selection_policy` / `catalog_source` / `catalog_fetched_at` | 选择偏好、目录来源和更新时间；两个型号都固定时目录字段为空 |
+| `catalog_stale` | 官网目录是否过期或使用内置回退；没有读取目录时为空 |
+| `provider_models_source` / `provider_models_fetched_at` / `provider_models_stale` | 中转站模型列表的来源、更新时间和过期状态；没有读取列表时为空 |
 | `responses_model_reason` / `image_model_reason` | 自动选择的推荐依据；显式选择时为空 |
-| `text` / `usage` | 上游文字说明及对话模型用量 |
+| `text` / `usage` | 上游文字说明（含提供的拒绝说明）及对话模型用量 |
 | `tool_usage` | 单独保留上游工具用量，例如 `image_gen`；缺失表示未知，不等于零 |
 | `warnings` / `errors` | 警告及按项错误 |
 
-配置或参数错误会返回精简的错误结构，字段可能少于上表。MCP 文本内容也包含路径、型号、ID 和重要警告。显式请求型号不能证明中转站实际路由；不把对话模型、请求回显或推测填入 `image_model_reported`。上游错误的安全标识可包含 `upstream_code`、`upstream_param`、`upstream_type`，不返回原始错误正文或凭据。用量记录可能不完整，实际费用以 provider 账单为准。
+配置或模型选择前的参数错误会返回精简的错误结构，字段可能少于上表；选定型号后发现能力不兼容时保留模型及来源，帮助定位问题。MCP 文本内容也包含路径、型号、ID 和重要警告。显式请求型号不能证明中转站实际路由；不把对话模型、请求回显或推测填入 `image_model_reported`。
+
+`errors[]` 中的错误项可包含 `upstream_code`、`upstream_param`、`upstream_type`，未完整完成时还可包含 `incomplete_reason`。SDK 在流式事件交付前抛出的 API 错误也会尽量保留这些标识，读取超时归类为 `timeout`。上游提供的拒绝说明保留在 `text` 中并经过已知认证值脱敏；不返回原始错误正文或已知凭据。已完成图片仍会保留，用量可能不完整，实际费用以 provider 账单为准。
 
 最多返回四张预览，每张以 1024×1024 为尺寸上限并进行压缩；预览可能重新编码。交付原图应使用 `images[].path`，不能把预览当作完整文件。
 
@@ -176,6 +191,10 @@ $imagegen 请使用系统自带的技能整理提示词、处理参考图并检�
 - 本地/data 输入合计 100 MB，单张小于 50 MB。
 - 最多 16 张最终图，合计 200 MiB，单张小于 100 MiB。
 - 最多保留 12 张中间图，合计 32 MiB。
+- `config.toml`、独立 profile 和 `auth.json` 每个文件最多 1 MiB（1,048,576 字节）。
+- 单个模型目录或失败记录缓存文件最多 1,000,000 字节。
+
+配置、认证和缓存读取均要求普通文件，打开前后都会核对文件类型和大小；打开后继续增长也受读取上限约束。POSIX 使用非阻塞打开来处理文件被替换成 FIFO 的情况，读取结束或失败时关闭描述符。过深的配置/认证数据转换为安全解析错误，profile 合并采用迭代方式，避免深层递归。
 
 目录中可能出现请求期间的隐藏锁或临时文件。不要删除仍在使用的锁；进程意外终止留下的锁，应确认没有相关任务后再处理。
 
@@ -194,7 +213,7 @@ $imagegen 请使用系统自带的技能整理提示词、处理参考图并检�
 | --- | --- |
 | `--codex-home` / `CODEX_HOME` | 定位已有 Codex 配置目录 |
 | `--profile` / `CODEX_IMAGE_PROFILE` | 选择已有 profile |
-| `CODEX_IMAGE_TIMEOUT` | 可选请求超时，默认 300 秒，范围 `(0, 3600]` |
+| `CODEX_IMAGE_TIMEOUT` | 单次生成总时间预算，包含本地准备、模型发现、上游请求和图片处理；默认 300 秒，范围 `(0, 3600]` |
 | `CODEX_IMAGE_RESPONSES_MODEL` | 可选固定对话型号 |
 | `CODEX_IMAGE_MODEL` | 可选固定图像型号或 `upstream_default` |
 | `CODEX_IMAGE_MODEL_POLICY` | 默认选择偏好，`quality` 或 `fast` |

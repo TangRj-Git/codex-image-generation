@@ -46,7 +46,7 @@ uvx codex-image-generation@latest --check
 
 `--check` 不请求中转站。`configured: true` 表示本地配置可解析，`connection_verified: false` 表示尚未验证上游连接，是正常结果。
 
-查看模型目录，不进行图像生成：
+查看模型目录，不进行图像生成；命中新鲜缓存时不联网：
 
 ```sh
 uvx codex-image-generation@latest --list-models
@@ -71,7 +71,7 @@ Codex 会启动 MCP 并调用工具，不需要 `serve` 参数，也不用单独
 - Codex 找不到 `uvx` 时，将 `command` 改为本机 `uvx` 的绝对路径。Windows 可用 `Get-Command uvx` 查看，macOS / Linux 可用 `command -v uvx` 查看。
 - 通过 `uvx` 接入时，使用上面的配置；`--print-config` 输出的 Python 路径可能位于缓存目录，清理缓存后可能失效。
 - 顶层对话模型从中转站列表选择，`tools[].model` 从官网图像目录选择。图像型号无需出现在中转站列表中，列表也不证明上游已支持图像工具。
-- `responses_model`、`image_model` 可覆盖自动选择，`model_policy=fast` 优先速度；`image_model=upstream_default` 显式省略图像型号。自动选择失败时，对话模型可以回退到 `current_model` 或配置中的 `model`。
+- `responses_model`、`image_model` 可覆盖自动选择，`model_policy=fast` 优先速度；`image_model=upstream_default` 显式省略图像型号。目录查询失败先考虑有效旧缓存；没有可推荐对话型号时，可以回退到 `current_model` 或配置中的 `model`。
 - 可通过 `CODEX_IMAGE_RESPONSES_MODEL`、`CODEX_IMAGE_MODEL`、`CODEX_IMAGE_MODEL_POLICY` 保存偏好；使用进程环境变量时也须加入 `env_vars`。
 - 对话模型列表缓存 5 分钟，官网目录缓存 24 小时。刷新失败标明旧缓存或内置快照；结果区分请求选择与上游报告的型号。
 - 实际生成图片会访问中转站，并可能产生费用；图片效果和参数支持取决于上游。超时或断流后先核对结果，再决定是否重试。

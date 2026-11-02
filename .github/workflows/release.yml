@@ -150,7 +150,8 @@ jobs:
           notes = Path("release-notes.md")
           notes.write_text(
               f"{tag} 的分发包已通过 Windows、Linux、macOS CI 测试、构建和独立安装验证。\n\n"
-              "下载 ZIP，按照包内 INSTALL.md 安装并接入 Codex。首次安装需要联网获取 Python 和依赖。\n\n"
+              "ZIP 保存本次发行的 wheel、源码和接入说明。标准 uvx @latest 入口仅在本版本发布到 PyPI 后才会选到它。\n\n"
+              "发布到 PyPI 前，维护者应使用本次 wheel 的精确路径验证，不能把 @latest 的旧版本结果当成本版本验证。首次安装需要联网获取 Python 和依赖。\n\n"
               "这是待维护者检查的发布草稿；确认版本说明与附件后再公开发布。\n\n"
               f"源码提交：`{sha}`\n",
               encoding="utf-8",

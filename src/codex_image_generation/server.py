@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 from typing import Annotated, Any, Literal, Self
 
 from fastmcp import Context, FastMCP
@@ -13,7 +14,7 @@ from PIL import Image as PILImage
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from . import __version__
-from .config import model_cache_directory, resolve_config
+from .config import get_model_preferences, model_cache_directory, resolve_config
 from .errors import ImageToolError
 from .generator import generate
 from .model_selection import list_dialogue_models, list_official_image_models
@@ -125,38 +126,53 @@ def _error_result(code: str, message: str) -> ToolResult:
     )
 
 
+def _listing_result(data: dict[str, Any]) -> ToolResult:
+    failed = bool(data.get("error")) or data.get("source") == "unavailable"
+    status = "error" if failed else ("partial_success" if data.get("warnings") or data.get("stale") else "success")
+    metadata = {**data, "status": status}
+    return ToolResult(content=[json.dumps(metadata, ensure_ascii=False)],
+                      structured_content=metadata, is_error=failed)
+
+
 @mcp.tool(annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
 async def list_models(
     refresh: Annotated[bool, Field(strict=True, description="Refresh the provider list and official capability catalog instead of using fresh caches.")] = False,
     model_policy: Annotated[Literal["quality", "fast"] | None, Field(description="Rank dialogue models for capability or speed. Default: configured policy, normally quality.")] = None,
-) -> dict[str, Any]:
+) -> ToolResult:
     """List provider dialogue models and recommend a documented image-tool caller.
 
     Does not generate images or verify paid tool execution. Image/audio/embedding models
     are excluded; unclassified provider aliases are returned separately.
     """
     try:
-        return await list_dialogue_models(resolve_config(require_model=False), refresh=refresh, policy=model_policy)
+        overrides = {"model_policy": model_policy} if model_policy is not None else {}
+        settings = resolve_config(require_model=False, include_image_preferences=False, **overrides)
+        return _listing_result(await list_dialogue_models(settings, refresh=refresh, policy=model_policy))
     except ImageToolError as exc:
-        return {"models": [], "recommended_model": None, "source": "unavailable", "error": str(exc)}
+        return _listing_result({"models": [], "recommended_model": None, "source": "unavailable", "error": str(exc)})
     except Exception:
-        return {"models": [], "recommended_model": None, "source": "unavailable", "error": "模型列表读取失败，请检查本地配置或稍后刷新。"}
+        return _listing_result({"models": [], "recommended_model": None, "source": "unavailable", "error": "模型列表读取失败，请检查本地配置或稍后刷新。"})
 
 
 @mcp.tool(annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
 async def list_image_models(
     refresh: Annotated[bool, Field(strict=True, description="Refresh public official docs instead of using the daily cache.")] = False,
-    model_policy: Annotated[Literal["quality", "fast"], Field(description="Recommend an image model for capability (default) or speed.")] = "quality",
-) -> dict[str, Any]:
+    model_policy: Annotated[Literal["quality", "fast"] | None, Field(description="Recommend for capability or speed. Default: CODEX_IMAGE_MODEL_POLICY, normally quality.")] = None,
+) -> ToolResult:
     """List image models from official OpenAI docs, independently of provider /models.
 
     Requires no provider credentials. Results describe official support, not verified
     availability through a relay. Stale or bundled fallback catalogs are labeled.
     """
     try:
-        return await list_official_image_models(model_cache_directory(), refresh=refresh, policy=model_policy)
-    except (ImageToolError, OSError):
-        return {"models": [], "recommended_model": None, "source": "unavailable", "error": "官方图像目录暂时不可读取。"}
+        preferences = get_model_preferences(include_responses=False, policy=model_policy)
+        result = await list_official_image_models(model_cache_directory(), refresh=refresh,
+                                                  policy=model_policy if model_policy is not None else preferences["model_policy"])
+        return _listing_result({**result, "image_model_override": preferences["image_model"]})
+    except ImageToolError as exc:
+        return _listing_result({"models": [], "recommended_model": None, "source": "unavailable", "error": str(exc)})
+    except Exception:
+        return _listing_result({"models": [], "recommended_model": None, "source": "unavailable", "error": "官方图像目录暂时不可读取。"})
 
 
 @mcp.tool(annotations={
@@ -200,7 +216,8 @@ async def generate_image(
     absolute paths and edit IDs; successful images survive partial failures.
     """
     try:
-        settings = resolve_config(current_model=current_model, require_model=False)
+        overrides = {name: value for name, value in (("responses_model", responses_model), ("image_model", image_model), ("model_policy", model_policy)) if value is not None}
+        settings = resolve_config(current_model=current_model, require_model=False, **overrides)
     except ImageToolError as exc:
         return _error_result("configuration_error", str(exc))
     progress_count = 0

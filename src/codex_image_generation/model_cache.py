@@ -3,41 +3,63 @@
 from __future__ import annotations
 
 import json
+import asyncio
 import math
 import os
 import tempfile
 import time
 from pathlib import Path
 from typing import Any
+from weakref import WeakKeyDictionary, WeakValueDictionary
+
+from .local_files import read_regular_bytes
 
 MAX_CACHE_BYTES = 1_000_000
+_CACHE_LOCKS: WeakKeyDictionary[Any, WeakValueDictionary[str, asyncio.Lock]] = WeakKeyDictionary()
+
+
+def cache_lock(path: Path) -> asyncio.Lock:
+    """A process-local per-loop lock; callers recheck the cache after acquiring it."""
+    loop = asyncio.get_running_loop()
+    locks = _CACHE_LOCKS.setdefault(loop, WeakValueDictionary())
+    key = os.path.normcase(str(path.absolute()))
+    lock = locks.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        locks[key] = lock
+    return lock
+
+
+def _valid_timestamp(value: Any) -> bool:
+    try:
+        return type(value) in {int, float} and math.isfinite(value) and 0 < value <= time.time() + 300
+    except (OverflowError, ValueError):
+        return False
 
 
 def read_cache(path: Path, scope: str) -> dict[str, Any] | None:
     try:
-        with path.open("rb") as handle:
-            data = handle.read(MAX_CACHE_BYTES + 1)
-        if len(data) > MAX_CACHE_BYTES:
-            return None
+        data = read_regular_bytes(path, MAX_CACHE_BYTES)
         entry = json.loads(data)
-        if not isinstance(entry, dict) or entry.get("version") != 1 or entry.get("scope") != scope:
+        if not isinstance(entry, dict) or type(entry.get("version")) is not int or entry["version"] != 1 or entry.get("scope") != scope:
             return None
         fetched = entry.get("fetched_at")
-        if type(fetched) not in {int, float} or not math.isfinite(fetched) or not 0 < fetched <= time.time() + 300:
+        if not _valid_timestamp(fetched):
             return None
         return entry
-    except (OSError, ValueError, TypeError):
+    except (OSError, ValueError, TypeError, RecursionError, OverflowError):
         return None
 
 
 def fresh(entry: dict[str, Any] | None, ttl: float) -> bool:
-    return entry is not None and time.time() - entry["fetched_at"] < ttl
+    return (isinstance(entry, dict) and _valid_timestamp(entry.get("fetched_at"))
+            and time.time() - entry["fetched_at"] < ttl)
 
 
 def write_cache(path: Path, entry: dict[str, Any]) -> bool:
     temporary = None
     try:
-        data = json.dumps(entry, ensure_ascii=False).encode("utf-8")
+        data = json.dumps(entry, ensure_ascii=False, allow_nan=False).encode("utf-8")
         if len(data) > MAX_CACHE_BYTES:
             return False
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -46,7 +68,7 @@ def write_cache(path: Path, entry: dict[str, Any]) -> bool:
             handle.write(data)
         os.replace(temporary, path)
         return True
-    except (OSError, ValueError, TypeError):
+    except (OSError, ValueError, TypeError, RecursionError, OverflowError):
         return False
     finally:
         if temporary is not None:

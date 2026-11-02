@@ -205,7 +205,7 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         ):
             async with Client(mcp) as client:
                 response = await client.call_tool_mcp("list_models", {"model_policy": "fast"})
-        resolver.assert_called_once_with(require_model=False)
+        resolver.assert_called_once_with(require_model=False, include_image_preferences=False, model_policy="fast")
         self.assertEqual(response.structured_content["source"], "provider")
 
 

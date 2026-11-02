@@ -150,11 +150,12 @@ class GenerationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.usage["total_tokens"], 30)
 
     async def test_incompatible_image_model_options_never_generate(self):
-        with self.assertRaises(ImageToolError):
-            await self.call(image_model="gpt-image-2", quality="max")
+        result = await self.call(image_model="gpt-image-2", quality="max")
+        self.assertEqual(result.status, "error")
+        self.assertEqual(result.errors[0]["code"], "invalid_request")
+        self.assertEqual(result.models["image_model_selected"], "gpt-image-2")
         self.factory.assert_not_called()
         self.assertFalse(self.all_files())
-        self.assertEqual(self.all_files(), [])
 
     async def test_format_inference_and_provider_mismatch_preserved(self):
         self.client.responses.create.return_value = response([image_item(fmt="jpeg")])
@@ -176,6 +177,18 @@ class GenerationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual({error["code"] for error in result.errors}, {"response_incomplete", "image_generation_failed"})
         self.assertTrue(result.images[0].path.exists())
 
+    async def test_failed_response_preserves_safe_error_and_incomplete_reason(self):
+        self.client.responses.create.return_value = response([], status="failed", error={
+            "code": "image_generation_user_error", "message": "fixture-selected-key private error",
+            "param": "tools[0].model", "type": "invalid_request_error",
+        }, incomplete_details={"reason": "content_filter"})
+        result = await self.call()
+        failure = next(error for error in result.errors if error["code"] == "response_incomplete")
+        self.assertEqual(failure["upstream_code"], "image_generation_user_error")
+        self.assertEqual(failure["upstream_param"], "tools[0].model")
+        self.assertEqual(failure["incomplete_reason"], "content_filter")
+        self.assertNotIn("fixture-selected-key", str(result))
+
     async def test_bad_base64_does_not_discard_good_image(self):
         self.client.responses.create.return_value = response([image_item("bad", result="%%%"), image_item()])
         result = await self.call()
@@ -190,6 +203,26 @@ class GenerationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.errors[0]["code"], "no_images")
         self.assertEqual(result.response_id, "resp_fixture")
         self.assertEqual(self.all_files(), [])
+
+    async def test_refusal_text_is_preserved_and_redacted_when_no_image_is_returned(self):
+        self.client.responses.create.return_value = response([{
+            "type": "message", "role": "assistant", "content": [
+                {"type": "output_text", "text": "Request received. "},
+                {"type": "refusal", "refusal": "Cannot generate this request. fixture-selected-key"},
+            ],
+        }], output_text="Request received. ")
+        result = await self.call()
+        self.assertEqual(result.status, "error")
+        self.assertIn("Cannot generate", result.text)
+        self.assertIn("Request received", result.text)
+        self.assertNotIn("fixture-selected-key", result.text)
+        self.assertEqual(result.errors[0]["code"], "no_images")
+
+    async def test_experimental_resolution_warning_applies_only_to_known_models(self):
+        for model, expected in [("gpt-image-2.5-sunburst", True), ("custom-image", False), (None, False)]:
+            with self.subTest(model=model):
+                result = await self.call(image_model=model, size="3840x2160")
+                self.assertEqual(any("实验性" in warning for warning in result.warnings), expected)
 
     async def test_remote_file_and_historical_inputs_are_forwarded(self):
         result = await self.call(input_images=[{"image_url": "https://images.example/picture.png", "detail": "original"},
@@ -459,6 +492,42 @@ class SDKTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(result.images), 1)
         self.assertTrue(any(error["code"] == "timeout" for error in result.errors))
         self.assertTrue(stream.closed)
+
+    async def test_sdk_stream_read_timeout_preserves_timeout_classification(self):
+        class ReadTimeoutStream(BytesStream):
+            async def __aiter__(self):
+                async for chunk in super().__aiter__():
+                    yield chunk
+                raise httpx2.ReadTimeout("fixture-selected-key private timeout")
+
+        stream = ReadTimeoutStream(self.stream_events(terminal=False))
+        result, requests = await self.run_sdk(
+            lambda _: httpx2.Response(200, headers={"content-type": "text/event-stream"}, stream=stream), partial_images=1,
+        )
+        self.assertEqual(result.status, "partial_success")
+        self.assertEqual(len(result.images), 1)
+        self.assertIn("timeout", {error["code"] for error in result.errors})
+        self.assertNotIn("fixture-selected-key", str(result.errors))
+        self.assertEqual(len(requests), 1)
+        self.assertTrue(stream.closed)
+
+    async def test_sdk_stream_error_preserves_code_and_completed_asset(self):
+        events = self.stream_events(terminal=False)
+        events.append(sse({"type": "error", "error": {
+            "code": "moderation_blocked", "type": "image_generation_user_error",
+            "param": "input[0]", "message": "fixture-selected-key private body",
+        }}))
+        stream = BytesStream(events)
+        result, requests = await self.run_sdk(
+            lambda _: httpx2.Response(200, headers={"content-type": "text/event-stream"}, stream=stream), partial_images=1,
+        )
+        self.assertEqual(result.status, "partial_success")
+        self.assertEqual(result.errors[0]["upstream_code"], "moderation_blocked")
+        self.assertEqual(result.errors[0]["upstream_param"], "input[0]")
+        self.assertEqual(len(result.images), 1)
+        self.assertEqual(len(requests), 1)
+        self.assertTrue(stream.closed)
+        self.assertNotIn("fixture-selected-key", str(result.errors))
         self.assertEqual(len(requests), 1)
 
     async def test_partial_budget_is_bounded_without_losing_final(self):
