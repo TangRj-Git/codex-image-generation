@@ -41,22 +41,26 @@ def result(directory, **changes):
         images=[image], partials=[], text="Done", response_id="resp_test",
         request_id="req_test", usage={"total_tokens": 10}, warnings=[], errors=[],
         status="success",
+        models={"responses_model_requested": "gpt-6-astra", "responses_model_source": "config",
+                "image_model_selected": "gpt-image-2.5-sunburst", "image_model_source": "official_catalog",
+                "image_model_reported": None, "image_model_evidence": "request_only"},
+        tool_usage={"image_gen": {"total_tokens": 20}},
     )
     values.update(changes)
     return SimpleNamespace(**values)
 
 
 class ServerTests(unittest.IsolatedAsyncioTestCase):
-    async def test_one_tool_and_no_separate_model_or_credentials(self):
+    async def test_discovery_tools_and_independent_model_options(self):
         async with Client(mcp) as client:
             tools = await client.list_tools()
-        self.assertEqual([tool.name for tool in tools], ["generate_image"])
-        schema = tools[0].input_schema
+        self.assertEqual({tool.name for tool in tools}, {"generate_image", "list_models", "list_image_models"})
+        schema = next(tool for tool in tools if tool.name == "generate_image").input_schema
         self.assertEqual(set(schema["required"]), {"prompt", "cwd"})
         self.assertIn("current_model", schema["properties"])
-        for key in ("input_images", "mask", "partial_images", "moderation"):
+        for key in ("input_images", "mask", "partial_images", "moderation", "image_model", "responses_model", "model_policy"):
             self.assertIn(key, schema["properties"])
-        for key in ("api_key", "base_url", "image_model", "responses_model", "project_dir", "ctx"):
+        for key in ("api_key", "base_url", "project_dir", "ctx"):
             self.assertNotIn(key, schema["properties"])
 
     async def test_preview_paths_and_ids_have_text_fallback(self):
@@ -77,7 +81,10 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn(expected, text)
         self.assertEqual(response.structured_content["model"], "gpt-6-astra")
         self.assertTrue(Path(response.structured_content["images"][0]["path"]).is_absolute())
-        resolver.assert_called_once_with(current_model="gpt-6-astra")
+        self.assertEqual(response.structured_content["image_model_selected"], "gpt-image-2.5-sunburst")
+        self.assertEqual(response.structured_content["tool_usage"]["image_gen"]["total_tokens"], 20)
+        self.assertIn("请求选择的图像模型", text)
+        resolver.assert_called_once_with(current_model="gpt-6-astra", require_model=False)
 
     async def test_invalid_compression_never_reaches_config_or_api(self):
         for value in (True, "50", 80.0, -1, 101):
@@ -104,7 +111,7 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(response.is_error)
                 generator.assert_not_called()
 
-    async def test_sources_are_forwarded_without_model_settings(self):
+    async def test_sources_and_model_overrides_are_forwarded(self):
         with tempfile.TemporaryDirectory() as directory, patch(
             "codex_image_generation.server.resolve_config", return_value=config("config")
         ), patch(
@@ -115,9 +122,11 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
                     "prompt": "Edit", "cwd": directory,
                     "input_images": [{"file_id": "file_test", "detail": "high"}],
                     "include_preview": False,
+                    "responses_model": "custom-dialogue", "image_model": "gpt-image-2.5-flare",
                 })
         self.assertEqual(generator.call_args.kwargs["input_images"], [{"file_id": "file_test", "detail": "high"}])
-        self.assertNotIn("image_model", generator.call_args.kwargs)
+        self.assertEqual(generator.call_args.kwargs["image_model"], "gpt-image-2.5-flare")
+        self.assertEqual(generator.call_args.kwargs["responses_model"], "custom-dialogue")
         self.assertFalse(any(item.type == "image" for item in response.content))
         self.assertFalse(response.structured_content["session_model_auto_detection"])
         self.assertTrue(response.structured_content["warnings"])
@@ -173,10 +182,31 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
                     async with Client(transport) as client:
                         names = {tool.name for tool in await client.list_tools()}
                         response = await client.call_tool_mcp("generate_image", {"prompt": "Draw", "cwd": "relative"})
-            self.assertEqual(names, {"generate_image"})
+            self.assertEqual(names, {"generate_image", "list_models", "list_image_models"})
             self.assertTrue(response.is_error)
             self.assertEqual(response.structured_content["errors"][0]["code"], "invalid_request")
             self.assertNotIn("stdio-fake-key", str(response))
+
+    async def test_image_catalog_tool_does_not_read_provider_credentials(self):
+        with patch("codex_image_generation.server.resolve_config") as resolver, patch(
+            "codex_image_generation.server.list_official_image_models", new_callable=AsyncMock,
+            return_value={"models": [{"id": "gpt-image-2.5-sunburst"}], "source": "official"},
+        ) as listing:
+            async with Client(mcp) as client:
+                response = await client.call_tool_mcp("list_image_models", {"refresh": True})
+        resolver.assert_not_called()
+        self.assertTrue(listing.call_args.kwargs["refresh"])
+        self.assertEqual(response.structured_content["source"], "official")
+
+    async def test_dialogue_list_tool_handles_no_config_model(self):
+        with patch("codex_image_generation.server.resolve_config", return_value=config()) as resolver, patch(
+            "codex_image_generation.server.list_dialogue_models", new_callable=AsyncMock,
+            return_value={"models": [{"id": "gpt-6-astra"}], "source": "provider"},
+        ):
+            async with Client(mcp) as client:
+                response = await client.call_tool_mcp("list_models", {"model_policy": "fast"})
+        resolver.assert_called_once_with(require_model=False)
+        self.assertEqual(response.structured_content["source"], "provider")
 
 
 class StatusTests(unittest.TestCase):

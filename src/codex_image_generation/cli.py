@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import logging
 import math
@@ -28,9 +29,15 @@ def main() -> None:
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--check", action="store_true", help="Inspect local configuration without an API request")
     mode.add_argument("--print-config", action="store_true", help="Print a Codex MCP installation snippet")
+    mode.add_argument("--list-models", action="store_true", help="List dialogue models from the selected provider (no image generation)")
+    mode.add_argument("--list-image-models", action="store_true", help="List image models from public official docs (no API key needed)")
+    parser.add_argument("--refresh-models", action="store_true", help="Refresh model catalogs with a list command")
+    parser.add_argument("--model-policy", choices=("quality", "fast"), help="Recommendation policy for a list command")
     parser.add_argument("--codex-home", help="Locate existing Codex configuration")
     parser.add_argument("--profile", help="Select an existing Codex configuration profile")
     options = parser.parse_args()
+    if (options.refresh_models or options.model_policy) and not (options.list_models or options.list_image_models):
+        parser.error("--refresh-models and --model-policy require --list-models or --list-image-models")
     if options.codex_home is not None:
         os.environ["CODEX_HOME"] = str(Path(options.codex_home).expanduser().resolve())
     if options.profile is not None:
@@ -62,7 +69,16 @@ def main() -> None:
 
     for name in ("openai", "httpx", "httpx2", "httpcore"):
         logging.getLogger(name).setLevel(logging.WARNING)
-    from .server import configuration_status, mcp
+    from .server import configuration_status, list_image_models, list_models, mcp
+
+    if options.list_models or options.list_image_models:
+        listing = (list_models(refresh=options.refresh_models, model_policy=options.model_policy)
+                   if options.list_models else list_image_models(refresh=options.refresh_models, model_policy=options.model_policy or "quality"))
+        result = asyncio.run(listing)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        if result.get("error") or result.get("source") == "unavailable":
+            raise SystemExit(1)
+        return
 
     if options.check:
         status = configuration_status()

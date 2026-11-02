@@ -20,6 +20,7 @@ from PIL import Image
 from codex_image_generation.errors import ImageToolError
 from codex_image_generation import generator
 from codex_image_generation.generator import generate, validate_options
+from codex_image_generation.model_selection import SelectedModels
 
 
 def image_bytes(fmt="png", alpha=255, size=(16, 24)):
@@ -54,6 +55,13 @@ def client(result=None):
     instance.__aexit__ = AsyncMock(return_value=False)
     instance.responses.create = AsyncMock(return_value=response() if result is None else result)
     return instance
+
+
+async def selected_models(settings, *, responses_model=None, image_model=None, model_policy=None):
+    model = responses_model or settings.model
+    if model is None:
+        raise ImageToolError("No model was selected")
+    return SelectedModels(model, "caller", image_model, "caller", model_policy or "quality")
 
 
 class OptionTests(unittest.TestCase):
@@ -94,6 +102,9 @@ class GenerationTests(unittest.IsolatedAsyncioTestCase):
         self.mock = patch.object(generator, "AsyncOpenAI", return_value=self.client)
         self.factory = self.mock.start()
         self.addCleanup(self.mock.stop)
+        selection_patch = patch.object(generator, "select_models", side_effect=selected_models)
+        self.selection = selection_patch.start()
+        self.addCleanup(selection_patch.stop)
 
     async def call(self, **kwargs):
         settings = kwargs.pop("settings", config())
@@ -123,6 +134,26 @@ class GenerationTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ImageToolError):
             await self.call(settings=config(model=None))
         self.factory.assert_not_called()
+
+    async def test_two_models_and_tool_usage_are_preserved(self):
+        self.client.responses.create.return_value["tool_usage"] = {
+            "image_gen": {"input_tokens": 100, "output_tokens": 200, "total_tokens": 300},
+        }
+        result = await self.call(responses_model="chosen-dialogue", image_model="gpt-image-2.5-sunburst")
+        request = self.client.responses.create.call_args.kwargs
+        self.assertEqual(request["model"], "chosen-dialogue")
+        self.assertEqual(request["tools"][0]["model"], "gpt-image-2.5-sunburst")
+        self.assertEqual(result.models["image_model_selected"], "gpt-image-2.5-sunburst")
+        self.assertIsNone(result.models["image_model_reported"])
+        self.assertEqual(result.model, "session-model")
+        self.assertEqual(result.tool_usage["image_gen"]["total_tokens"], 300)
+        self.assertEqual(result.usage["total_tokens"], 30)
+
+    async def test_incompatible_image_model_options_never_generate(self):
+        with self.assertRaises(ImageToolError):
+            await self.call(image_model="gpt-image-2", quality="max")
+        self.factory.assert_not_called()
+        self.assertFalse(self.all_files())
         self.assertEqual(self.all_files(), [])
 
     async def test_format_inference_and_provider_mismatch_preserved(self):
@@ -334,7 +365,9 @@ class SDKTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("_enforce_credentials", options)
             return AsyncOpenAI(**options, http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(wrapped)))
 
-        with tempfile.TemporaryDirectory() as cwd, patch.object(generator, "AsyncOpenAI", side_effect=factory):
+        with tempfile.TemporaryDirectory() as cwd, patch.object(generator, "AsyncOpenAI", side_effect=factory), patch.object(
+            generator, "select_models", side_effect=selected_models,
+        ):
             result = await generate(settings or config(), prompt="Draw an image", cwd=cwd, **kwargs)
             self.assertTrue(all(image.path.exists() for image in result.images))
         return result, captured
@@ -400,6 +433,22 @@ class SDKTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any(error["code"] == "stream_interrupted" for error in result.errors))
         self.assertEqual(len(requests), 1)
         self.assertNotIn("fixture-selected-key", repr(result.errors))
+        self.assertTrue(stream.closed)
+
+    async def test_streamed_final_response_keeps_selected_models_and_image_usage(self):
+        events = self.stream_events(terminal=False)
+        events.append(sse({"type": "response.completed", "sequence_number": 3, "response": response(
+            tool_usage={"image_gen": {"input_tokens": 10, "output_tokens": 20, "total_tokens": 30}},
+        )}))
+        stream = BytesStream(events)
+        result, requests = await self.run_sdk(
+            lambda _: httpx2.Response(200, headers={"content-type": "text/event-stream"}, stream=stream),
+            partial_images=1, image_model="gpt-image-2.5-sunburst",
+        )
+        self.assertEqual(result.status, "success")
+        self.assertEqual(result.models["image_model_selected"], "gpt-image-2.5-sunburst")
+        self.assertEqual(result.tool_usage["image_gen"]["total_tokens"], 30)
+        self.assertEqual(len(requests), 1)
         self.assertTrue(stream.closed)
 
     async def test_stream_timeout_retains_completed_asset(self):

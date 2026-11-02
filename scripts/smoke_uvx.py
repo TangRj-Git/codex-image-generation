@@ -29,7 +29,7 @@ async def check_stdio(command: list[str], cwd: Path, env: dict[str, str], log: P
         async with asyncio.timeout(60):
             async with Client(transport) as client:
                 tools = await client.list_tools()
-                if [tool.name for tool in tools] != ["generate_image"]:
+                if {tool.name for tool in tools} != {"generate_image", "list_models", "list_image_models"}:
                     raise RuntimeError("uvx did not expose the expected MCP tool")
                 result = await client.call_tool_mcp(
                     "generate_image", {"prompt": "Offline validation only", "cwd": "relative"},

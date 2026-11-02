@@ -7,15 +7,17 @@ import base64
 import binascii
 import inspect
 import math
-import os
 import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping
 from urllib.parse import urlsplit
 
-from openai import APIConnectionError, APIStatusError, APITimeoutError, AsyncOpenAI, OpenAIError, omit
+from openai import APIConnectionError, APIStatusError, APITimeoutError, AsyncOpenAI, OpenAIError
 
 from .errors import ImageToolError
+from .model_selection import select_models, validate_model_options
+from .model_catalog import model_id
+from .provider import client_options, request_headers as _request_headers
 from .storage import (
     MAX_INPUT_BYTES, MAX_OUTPUT_BYTES, GeneratedImage, ImageInfo, PreparedImage,
     inspect_image, prepare_save, read_input_image, resolve_format, resolve_project, save_images,
@@ -47,6 +49,8 @@ class GenerationResult:
     status: str = "error"
     partials: list[PreparedImage] = field(default_factory=list)
     model: str | None = None
+    models: dict[str, Any] = field(default_factory=dict)
+    tool_usage: dict[str, Any] | None = None
 
 
 def _get(value: Any, key: str, default: Any = None) -> Any:
@@ -103,28 +107,6 @@ def validate_options(
     if partial_images:
         tool["partial_images"] = partial_images
     return tool
-
-
-async def _header_auth_key() -> str:
-    """Use the SDK's public key-provider contract for explicit header authentication."""
-    return ""
-
-
-def _request_headers(config: ResolvedConfig) -> dict[str, Any]:
-    headers: dict[str, Any] = {}
-    for line in os.environ.get("OPENAI_CUSTOM_HEADERS", "").splitlines():
-        name, separator, _ = line.partition(":")
-        name = name.strip().lower()
-        if separator and re.fullmatch(r"[!#$%&'*+.^_`|~0-9a-z-]+", name):
-            headers[name] = omit
-    if config.provider != "openai":
-        headers.update({"openai-organization": omit, "openai-project": omit})
-    headers.update({name.lower(): value for name, value in config.headers.items()})
-    if config.api_key:
-        headers["authorization"] = f"Bearer {config.api_key}"
-    elif not isinstance(headers.get("authorization"), str):
-        headers["authorization"] = omit
-    return headers
 
 
 async def _settle(task: asyncio.Task[Any]) -> Any:
@@ -336,12 +318,17 @@ class _State:
     def response(self, response: Any, *, terminal: bool = False) -> None:
         self.result.response_id = self.identifier(_get(response, "id")) or self.result.response_id
         self.result.request_id = self.identifier(_get(response, "_request_id")) or self.result.request_id
-        actual_model = self.identifier(_get(response, "model"))
+        actual_model = model_id(_get(response, "model"))
+        if actual_model and self.text(actual_model) != actual_model:
+            actual_model = None
         if actual_model:
             self.result.model = actual_model
         usage = _numeric_usage(_get(response, "usage"), redact=self.text)
         if isinstance(usage, dict):
             self.result.usage = usage
+        tool_usage = _numeric_usage(_get(response, "tool_usage"), redact=self.text)
+        if isinstance(tool_usage, dict):
+            self.result.tool_usage = tool_usage
         try:
             text = self.text(_get(response, "output_text"))
         except Exception:
@@ -394,7 +381,8 @@ def _decode_items(state: _State, tool: dict[str, Any]) -> tuple[list[PreparedIma
     for index, item in enumerate(state.items.values()):
         call_id = state.identifier(_get(item, "id"))
         if _get(item, "status") not in {None, "completed"} or _get(item, "error") is not None:
-            errors.append({"code": "image_generation_failed", "message": "该图片工具调用失败或未完成。", "call_id": call_id, "index": index})
+            errors.append({"code": "image_generation_failed", "message": "该图片工具调用失败或未完成。", "call_id": call_id, "index": index,
+                           **_error_details(_get(item, "error"), state)})
             continue
         try:
             data = _decode_base64(_get(item, "result"), MAX_OUTPUT_BYTES, "返回图片")
@@ -521,13 +509,30 @@ def _record_failure(state: _State, error: Exception) -> None:
             code, message = "invalid_request", "上游拒绝请求，请核对模型、图像参数和 Responses 工具支持情况。"
         else:
             code, message = "upstream_http_error", "上游 HTTP 请求失败，未自动重试。"
-        state.error(code, message, http_status=status)
+        body = getattr(error, "body", None)
+        details = _get(body, "error", body)
+        state.error(code, message, http_status=status, **_error_details(details, state))
     elif isinstance(error, APIConnectionError):
         state.error("connection_error", "上游连接中断或不可达；已完成图片会尽量保存，未自动重试。")
     elif isinstance(error, OpenAIError):
         state.error("sdk_error", "上游 SDK 请求失败，请检查接口兼容性。")
     else:
         state.error("processing_error", "图像处理未完整完成；已完成图片会尽量保存。")
+
+
+def _error_details(error: Any, state: _State) -> dict[str, Any]:
+    """Expose bounded error identifiers, never raw provider bodies or messages."""
+    details = {}
+    for name in ("code", "param", "type"):
+        value = _get(error, name)
+        if name == "param":
+            value = value if (isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.:\[\]-]{0,199}", value)
+                              and state.text(value) == value) else None
+        else:
+            value = state.identifier(value)
+        if value:
+            details["upstream_" + name] = value
+    return details
 
 
 async def _finalize(state: _State, plan: Any, tool: dict[str, Any]) -> None:
@@ -549,6 +554,8 @@ async def generate(
     input_fidelity: str | None = None, previous_response_id: str | None = None,
     previous_image_ids: list[str] | None = None, moderation: str | None = None,
     partial_images: int = 0, safety_identifier: str | None = None,
+    responses_model: str | None = None, image_model: str | None = None,
+    model_policy: str | None = None,
     on_progress: ProgressCallback | None = None,
 ) -> GenerationResult:
     """Generate/edit with no automatic retry; retain validated completed assets.
@@ -559,7 +566,6 @@ async def generate(
     """
     if not isinstance(prompt, str) or not prompt.strip():
         raise ImageToolError("prompt 不能为空。")
-    _nonempty(config.model, "model：请指定当前会话模型或在 Codex 配置中设置模型")
     if previous_response_id is not None:
         _nonempty(previous_response_id, "previous_response_id")
     if safety_identifier is not None:
@@ -577,20 +583,27 @@ async def generate(
                                       on_cancel=lambda value: value.release())
                 request_input = await _offload(_prepare_input, prompt, cwd, tool, input_images, mask,
                                                previous_response_id, previous_image_ids)
-                request: dict[str, Any] = {"model": config.model, "input": request_input, "tools": [tool],
+                await _notify(on_progress, {"stage": "discovering_models"}, state)
+                selected = await select_models(config, responses_model=responses_model, image_model=image_model, model_policy=model_policy)
+                state.result.models = selected.public()
+                for warning in selected.warnings:
+                    state.warn(warning)
+                if selected.image_model is not None:
+                    tool["model"] = selected.image_model
+                validate_model_options(selected.image_model, tool)
+                if tool.get("size") not in {None, "auto"}:
+                    width, height = (int(value) for value in tool["size"].split("x"))
+                    if width * height > 2560 * 1440:
+                        state.warn("请求尺寸超过 2560×1440 像素面积；官方将这一范围标为实验性支持。")
+                await _notify(on_progress, {"stage": "models_selected", "responses_model": selected.responses_model,
+                                            "image_model": selected.image_model}, state)
+                request: dict[str, Any] = {"model": selected.responses_model, "input": request_input, "tools": [tool],
                                            "tool_choice": {"type": "image_generation"}, "extra_headers": _request_headers(config)}
                 if previous_response_id is not None:
                     request["previous_response_id"] = previous_response_id
                 if safety_identifier is not None:
                     request["safety_identifier"] = safety_identifier
-                client_options: dict[str, Any] = {
-                    "base_url": config.base_url, "api_key": config.api_key or _header_auth_key,
-                    "default_headers": config.headers, "default_query": config.query_params,
-                    "timeout": config.request_timeout, "max_retries": 0,
-                }
-                if config.provider != "openai":
-                    client_options.update(organization="", project="", admin_api_key="")
-                async with AsyncOpenAI(**client_options) as client:
+                async with AsyncOpenAI(**client_options(config)) as client:
                     if partial_images:
                         stream = await client.responses.create(**request, stream=True)
                         await _consume_stream(stream, state, on_progress)

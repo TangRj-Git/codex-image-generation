@@ -37,3 +37,16 @@ class ResultRedactionTests(unittest.TestCase):
         self.assertIsNone(self.state.result.model)
         self.state.response({"model": "provider-reported", "output": []})
         self.assertEqual(self.state.result.model, "provider-reported")
+        self.state.response({"model": "provider/gpt-6-astra", "output": []})
+        self.assertEqual(self.state.result.model, "provider/gpt-6-astra")
+        self.state.response({"model": "provider/" + self.secret, "output": []})
+        self.assertEqual(self.state.result.model, "provider/gpt-6-astra")
+
+    def test_tool_usage_is_separate_optional_and_redacted(self):
+        self.state.response({"usage": {"total_tokens": 2}, "tool_usage": {
+            "image_gen": {"total_tokens": 5, self.secret: 10}, self.secret: 99,
+        }})
+        self.assertEqual(self.state.result.usage, {"total_tokens": 2})
+        self.assertEqual(self.state.result.tool_usage, {"image_gen": {"total_tokens": 5}})
+        self.state.response({"output": []})
+        self.assertEqual(self.state.result.tool_usage["image_gen"]["total_tokens"], 5)

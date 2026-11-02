@@ -51,8 +51,9 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(result.api_key, "fake-inline-key")
         self.assertEqual(result.base_url, "https://relay.example/v1")
         self.assertEqual(result.request_timeout, 300)
-        self.assertFalse(hasattr(result, "image_model"))
-        self.assertFalse(hasattr(result, "responses_model"))
+        self.assertIsNone(result.image_model)
+        self.assertIsNone(result.responses_model)
+        self.assertEqual(result.model_policy, "quality")
 
     def test_trusted_caller_model_precedes_config(self):
         self.provider()
@@ -79,8 +80,6 @@ class ConfigTests(unittest.TestCase):
     def test_removed_environment_overrides_do_not_change_connection_or_model(self):
         self.provider()
         removed = {
-            "CODEX_IMAGE_RESPONSES_MODEL": "unused-model",
-            "CODEX_IMAGE_MODEL": "unused-image-model",
             "CODEX_IMAGE_BASE_URL": "https://unused.example/v1",
             "CODEX_IMAGE_API_KEY": "fake-unused-key",
             "CODEX_IMAGE_PROVIDER": "unused-provider",
@@ -91,6 +90,20 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(result.base_url, "https://relay.example/v1")
         self.assertEqual(result.api_key, "fake-inline-key")
         self.assertFalse(set(result.required_env_vars) & removed.keys())
+
+    def test_model_preferences_are_separate_from_codex_session_model(self):
+        self.provider()
+        env = {"CODEX_IMAGE_RESPONSES_MODEL": "chosen-dialogue", "CODEX_IMAGE_MODEL": "gpt-image-2.5-sunburst",
+               "CODEX_IMAGE_MODEL_POLICY": "fast"}
+        result = self.resolve(env)
+        self.assertEqual(result.model, "configured-model")
+        self.assertEqual(result.responses_model, "chosen-dialogue")
+        self.assertEqual(result.image_model, "gpt-image-2.5-sunburst")
+        self.assertEqual(result.model_policy, "fast")
+        self.assertTrue(set(env) <= set(result.required_env_vars))
+        self.assertTrue(set(env) <= set(self.launch(env)["required_env_vars"]))
+        with self.assertRaises(ImageToolError):
+            self.resolve({"CODEX_IMAGE_MODEL_POLICY": "unsupported"})
 
     def test_builtin_reads_explicit_top_level_url(self):
         self.openai()

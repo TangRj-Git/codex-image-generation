@@ -22,6 +22,7 @@ classifiers = [
 dependencies = [
     "fastmcp>=4.1.4,<5",
     "openai>=3.42.0,<4",
+    "httpx2>=2.16,<3",
     "pillow>=11.3,<14",
 ]
 

@@ -9,4 +9,6 @@ env_vars = []
 
 # 按需在 env_vars 中填写 provider 引用的变量名称，不填写密钥值。
 # 自定义 CODEX_HOME、CODEX_IMAGE_PROFILE、CODEX_IMAGE_TIMEOUT 时也需转发。
+# 默认自动选择模型；固定偏好可转发 CODEX_IMAGE_RESPONSES_MODEL、CODEX_IMAGE_MODEL。
+# CODEX_IMAGE_MODEL_POLICY 可设为 quality（默认）或 fast；无需设置即可使用。
 # Codex 找不到 uvx 时，将 command 改为本机 uvx 的绝对路径。

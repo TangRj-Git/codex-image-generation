@@ -1,4 +1,4 @@
-"""One image tool using the current task context and existing relay settings."""
+"""Model discovery and image generation using the existing Codex provider."""
 
 from __future__ import annotations
 
@@ -13,24 +13,41 @@ from PIL import Image as PILImage
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from . import __version__
-from .config import resolve_config
+from .config import model_cache_directory, resolve_config
 from .errors import ImageToolError
 from .generator import generate
+from .model_selection import list_dialogue_models, list_official_image_models
 
 INSTRUCTIONS = """Generate or edit raster images when the user requests them.
-Reuse the existing Codex relay configuration; never ask for another URL, API key or image model.
+Reuse the existing Codex relay URL and credentials; never ask for a separate URL or API key.
+When the user chooses this MCP for image work, reuse the installed system imagegen skill if
+it is available in the host's skill catalog. Have the host load it from that catalog; do not
+assume a filesystem location, copy the skill, or install a replacement skill.
+Apply its shared prompt guidance, reference-image roles, edit invariants, and visual review.
+Honor the user's chosen MCP backend: generate with this server, use this tool's parameters
+and saved paths, and do not silently switch to the skill's built-in tool or fallback CLI.
+Do not apply backend-specific CLI model defaults, parameter limits, or save-path rules to this MCP.
+After generation, inspect saved originals with the host's image viewer when available.
+Skill loading is controlled by the host. This server cannot activate or verify it; a tool call
+alone is not evidence that the skill was used. If the skill is unavailable, this MCP still works.
+Use list_models to inspect dialogue models exposed by the selected provider, and list_image_models
+for the independent official image-model catalog. Image models need not appear in provider /models.
+By default discover and select models with the quality policy. Use responses_model and image_model
+for explicit choices, or model_policy=fast for speed. Never describe automatic choices as verified
+provider capabilities. image_model=upstream_default explicitly omits tools[].model for compatibility.
 Supply cwd as the absolute working directory of the CURRENT task, not the MCP installation.
 Without a requested destination, omit output_dir and filename to save directly under cwd.
 Split a requested file path into output_dir and filename.
 Pass current_model only when its exact API ID is supplied by reliable session/runtime context.
-Never guess your model identity. Otherwise omit it: the server may use the configured model and
-reports model_source=config. This does not prove that it matches a temporary UI selection.
+Never guess your model identity. current_model and the Codex configured model are fallbacks when
+automatic discovery cannot select a dialogue model; responses_model is a separate request override.
 Keep the selected provider/profile context consistent with the session.
 Use filename/output_format for PNG, JPEG or WebP. Transparency requires PNG/WebP.
-Forward image options requested by the user; upstream decides model-specific capabilities.
+Forward requested image options. Known official model constraints are checked before generation.
 Use input_images for local paths, URLs/data URLs or provider file IDs, and mask for editing.
 previous_response_id and previous_image_ids must belong to the same provider that created them.
-Return saved original paths, previews, warnings and response/image IDs needed for later edits.
+Return selected dialogue/image models, their sources, saved originals, previews and edit IDs.
+An explicitly requested image model is not proof of the provider's actual internal routing.
 Do not automatically repeat a failed or timed-out generation: it may already have incurred charges.
 Previews are not originals. partial_images enables upstream streaming and progress, but real-time
 image display depends on the host. Intermediate previews are drafts, not saved final files.
@@ -108,6 +125,40 @@ def _error_result(code: str, message: str) -> ToolResult:
     )
 
 
+@mcp.tool(annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
+async def list_models(
+    refresh: Annotated[bool, Field(strict=True, description="Refresh the provider list and official capability catalog instead of using fresh caches.")] = False,
+    model_policy: Annotated[Literal["quality", "fast"] | None, Field(description="Rank dialogue models for capability or speed. Default: configured policy, normally quality.")] = None,
+) -> dict[str, Any]:
+    """List provider dialogue models and recommend a documented image-tool caller.
+
+    Does not generate images or verify paid tool execution. Image/audio/embedding models
+    are excluded; unclassified provider aliases are returned separately.
+    """
+    try:
+        return await list_dialogue_models(resolve_config(require_model=False), refresh=refresh, policy=model_policy)
+    except ImageToolError as exc:
+        return {"models": [], "recommended_model": None, "source": "unavailable", "error": str(exc)}
+    except Exception:
+        return {"models": [], "recommended_model": None, "source": "unavailable", "error": "模型列表读取失败，请检查本地配置或稍后刷新。"}
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
+async def list_image_models(
+    refresh: Annotated[bool, Field(strict=True, description="Refresh public official docs instead of using the daily cache.")] = False,
+    model_policy: Annotated[Literal["quality", "fast"], Field(description="Recommend an image model for capability (default) or speed.")] = "quality",
+) -> dict[str, Any]:
+    """List image models from official OpenAI docs, independently of provider /models.
+
+    Requires no provider credentials. Results describe official support, not verified
+    availability through a relay. Stale or bundled fallback catalogs are labeled.
+    """
+    try:
+        return await list_official_image_models(model_cache_directory(), refresh=refresh, policy=model_policy)
+    except (ImageToolError, OSError):
+        return {"models": [], "recommended_model": None, "source": "unavailable", "error": "官方图像目录暂时不可读取。"}
+
+
 @mcp.tool(annotations={
     "readOnlyHint": False, "destructiveHint": False,
     "idempotentHint": False, "openWorldHint": True,
@@ -117,6 +168,9 @@ async def generate_image(
     cwd: Annotated[str, Field(min_length=1, description="Absolute CURRENT task working directory, supplied by Codex from context.")],
     ctx: Context,
     current_model: Annotated[str | None, Field(description="Exact dialogue-model API ID only when reliably known from the session. Otherwise omit; config fallback is explicit.")] = None,
+    responses_model: Annotated[str | None, Field(min_length=1, max_length=200, description="Explicit top-level dialogue model, overriding automatic provider-model selection; does not change the Codex session.")] = None,
+    image_model: Annotated[str | None, Field(min_length=1, max_length=200, description="Explicit tools[].model from the official image catalog. Omit for automatic selection; upstream_default omits the upstream field.")] = None,
+    model_policy: Annotated[Literal["quality", "fast"] | None, Field(description="Automatic model-selection preference. Default: configured policy, normally quality. Separate from image quality.")] = None,
     output_dir: Annotated[str | None, Field(description="Directory relative to cwd or an explicitly requested absolute directory. Default: cwd itself.")] = None,
     filename: Annotated[str | None, Field(description="Filename only, e.g. cover.webp. Infer format from extension; default is a unique name. Never overwrite existing files.")] = None,
     output_format: Annotated[Literal["png", "jpeg", "jpg", "webp"] | None, Field(description="Infer from filename if omitted, otherwise default PNG. No SVG or animated output.")] = None,
@@ -137,12 +191,16 @@ async def generate_image(
 ) -> ToolResult:
     """Generate/edit images and save originals in the current directory or requested folder.
 
-    Reuse Codex relay URL and credentials, without a separate image-model setting.
+    Reuse Codex relay URL and credentials. Discover dialogue/image models independently;
+    explicit responses_model/image_model values override automatic selection.
+    When the user chooses this MCP, the host can reuse its installed system imagegen skill
+    for prompt preparation and visual review while executing generation here. The server
+    does not load skills itself; skill-specific built-in/CLI settings do not govern this tool.
     Supports PNG/JPEG/WebP, visual options, reference images and masks. Returns previews,
     absolute paths and edit IDs; successful images survive partial failures.
     """
     try:
-        settings = resolve_config(current_model=current_model)
+        settings = resolve_config(current_model=current_model, require_model=False)
     except ImageToolError as exc:
         return _error_result("configuration_error", str(exc))
     progress_count = 0
@@ -154,6 +212,8 @@ async def generate_image(
             "partial_image": "收到中间预览，正在继续生成最终图片",
             "completed": "上游生成完成，正在保存图片",
             "created": "图像请求已接收",
+            "discovering_models": "正在选择对话模型和图像模型",
+            "models_selected": f"模型已选择：{event.get('responses_model')} / {event.get('image_model') or '上游默认'}",
         }
         try:
             await ctx.report_progress(
@@ -172,6 +232,7 @@ async def generate_image(
             input_fidelity=input_fidelity, previous_response_id=previous_response_id,
             previous_image_ids=previous_image_ids, moderation=moderation,
             partial_images=partial_images, safety_identifier=safety_identifier,
+            responses_model=responses_model, image_model=image_model, model_policy=model_policy,
             on_progress=progress,
         )
     except ImageToolError as exc:
@@ -179,11 +240,16 @@ async def generate_image(
     except Exception:
         return _error_result("internal_error", "生成请求处理失败。请检查本地配置与输出目录，不要自动重复付费生成。")
 
+    model_metadata = getattr(result, "models", {})
+    requested_model = model_metadata.get("responses_model_requested", settings.model)
+    model_source = model_metadata.get("responses_model_source", settings.model_source)
     metadata: dict[str, Any] = {
         "status": result.status, "images": [], "partials": [], "text": result.text,
         "response_id": result.response_id, "request_id": result.request_id,
-        "model": settings.model, "model_source": settings.model_source,
+        "model": requested_model, "model_source": model_source,
         "reported_model": getattr(result, "model", None), "usage": result.usage,
+        **model_metadata, "responses_model_reported": getattr(result, "model", None),
+        "tool_usage": getattr(result, "tool_usage", None),
         "warnings": list(result.warnings), "errors": list(result.errors),
         "session_model_auto_detection": False,
     }
@@ -228,10 +294,11 @@ async def generate_image(
         content.append(f"Response ID: {result.response_id}")
     if result.request_id:
         content.append(f"Request ID: {result.request_id}")
-    content.append(f"Model: {settings.model} (source: {settings.model_source})")
-    if metadata["reported_model"] and metadata["reported_model"] != settings.model:
-        content.append(f"Upstream reported model: {metadata['reported_model']}")
-    if settings.model_source == "config":
+    content.append(f"对话模型：{requested_model} (source: {model_source})")
+    content.append(f"请求选择的图像模型：{model_metadata.get('image_model_selected') or '上游默认（型号未知）'} (source: {model_metadata.get('image_model_source', 'unknown')})")
+    if metadata["reported_model"] and metadata["reported_model"] != requested_model:
+        content.append(f"上游报告的对话模型：{metadata['reported_model']}")
+    if model_source == "config":
         metadata["warnings"].append("模型来自 Codex 配置文件，未验证其是否等于界面临时选择的当前会话模型。")
     if result.text:
         content.append(result.text)

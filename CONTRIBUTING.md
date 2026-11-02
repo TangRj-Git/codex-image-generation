@@ -15,9 +15,12 @@ uv run --locked python -B -m unittest discover -s tests -v
 
 ## 修改原则
 
-- 保持唯一公开工具 `generate_image` 的使用流程：描述图片，由调用方提供当前任务的绝对 `cwd`，默认保存到该目录。
-- URL 和凭据复用所选 Codex provider。不要另建 `api_key`、`base_url` 或 `image_model` 工具参数；请求不发送 `tools[].model`。
-- `current_model` 仅来自可靠的调用上下文，否则使用已有配置中的模型；不要猜测会话型号或增加硬编码兜底。
+- `generate_image` 负责生成和保存；`list_models`、`list_image_models` 负责只读发现。调用方提供当前任务的绝对 `cwd`，默认保存到该目录。
+- URL 和凭据复用所选 Codex provider，不另建 `api_key` 或 `base_url` 工具参数。`responses_model` 写入顶层，`image_model` 写入 `tools[].model`。
+- 对话模型从 provider 列表选择，图像模型从公共官网目录选择；不要要求图像型号出现在 provider 列表中。官网请求不得复用 provider 认证头。
+- `current_model` 仅来自可靠上下文，和 Codex 配置中的模型一起作为自动选择失败时的回退。显式请求型号、官网支持与中转站执行报告必须分别标明。
+- 模型缓存不得保存凭据，必须隔离 provider 和认证身份。目录解析失败保留上次有效数据，内置快照和过期目录必须标明来源、时间及局限。
+- 更新推荐策略或模型能力规则时注明核对日期和官方来源。不要按型号名称、列表顺序或创建时间断言某型号更强。
 - 已有文件不覆盖，部分失败保留成功原图。超时或断流后不要自动重复付费生成。
 - 行为修复应有能复现问题的测试。文档、排版等改动无需为了覆盖行数添加测试。
 - 涉及路径、文件保存或子进程时，考虑 Windows、macOS 和 Linux，并明确实际验证过的平台。

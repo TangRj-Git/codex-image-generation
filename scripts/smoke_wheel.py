@@ -77,10 +77,10 @@ async def check():
         async with asyncio.timeout(40):
             async with Client(transport) as client:
                 tools = await client.list_tools()
-                assert [tool.name for tool in tools] == ["generate_image"]
-                properties = tools[0].input_schema["properties"]
-                assert {"prompt", "cwd", "current_model", "output_format"} <= set(properties)
-                assert not {"api_key", "base_url", "image_model"} & set(properties)
+                assert {tool.name for tool in tools} == {"generate_image", "list_models", "list_image_models"}
+                properties = next(tool for tool in tools if tool.name == "generate_image").input_schema["properties"]
+                assert {"prompt", "cwd", "current_model", "output_format", "responses_model", "image_model"} <= set(properties)
+                assert not {"api_key", "base_url"} & set(properties)
                 result = await client.call_tool_mcp("generate_image", {"prompt": "Offline validation only", "cwd": "relative"})
                 assert result.is_error
                 assert result.structured_content["errors"][0]["code"] == "invalid_request"

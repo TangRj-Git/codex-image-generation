@@ -37,6 +37,9 @@ class ResolvedConfig:
     config_path: Path
     request_timeout: float
     required_env_vars: tuple[str, ...] = field(default=(), repr=False)
+    responses_model: str | None = None
+    image_model: str | None = None
+    model_policy: str = "quality"
 
     def public_status(self) -> dict[str, Any]:
         """Expose configuration metadata, not secrets or proof of a session model."""
@@ -53,6 +56,9 @@ class ResolvedConfig:
             "required_env_vars": list(self.required_env_vars),
             "session_model_auto_detection": False,
             "session_model_verified": False,
+            "responses_model_override": self.responses_model,
+            "image_model_override": self.image_model,
+            "model_selection_policy": self.model_policy,
         }
 
 
@@ -89,6 +95,19 @@ def _home(env: Mapping[str, str], codex_home: Path | None) -> Path:
         return (Path(value).expanduser() if value is not None else Path.home() / ".codex").resolve()
     except (OSError, ValueError, TypeError):
         raise ImageToolError("Cannot resolve the Codex configuration directory.") from None
+
+
+def model_cache_directory(*, environ: Mapping[str, str] | None = None,
+                          codex_home: Path | None = None) -> Path:
+    """Locate the public catalog cache without reading provider credentials."""
+    return _home(os.environ if environ is None else environ, codex_home) / "cache" / "image-generation"
+
+
+def _model_policy(env: Mapping[str, str]) -> str:
+    value = _env_text(env, "CODEX_IMAGE_MODEL_POLICY") or "quality"
+    if value not in {"quality", "fast"}:
+        raise ImageToolError("CODEX_IMAGE_MODEL_POLICY must be quality or fast.")
+    return value
 
 
 def _read_toml(path: Path, *, required: bool) -> dict[str, Any]:
@@ -213,6 +232,9 @@ def _required_env(env: Mapping[str, str], name: str, provider: dict[str, Any], *
         ("CODEX_HOME", codex_home is None),
         ("CODEX_IMAGE_PROFILE", profile is None),
         ("CODEX_IMAGE_TIMEOUT", True),
+        ("CODEX_IMAGE_RESPONSES_MODEL", True),
+        ("CODEX_IMAGE_MODEL", True),
+        ("CODEX_IMAGE_MODEL_POLICY", True),
     ):
         if relevant and _env_text(env, variable) is not None:
             names.add(variable)
@@ -392,4 +414,6 @@ def resolve_config(current_model: str | None = None, *,
         model=model, provider=name, model_source=model_source, credential_source=credential_source,
         config_path=config_path, request_timeout=_timeout(env),
         required_env_vars=_required_env(env, name, provider, codex_home=codex_home, profile=profile),
+        responses_model=_env_text(env, "CODEX_IMAGE_RESPONSES_MODEL"),
+        image_model=_env_text(env, "CODEX_IMAGE_MODEL"), model_policy=_model_policy(env),
     )

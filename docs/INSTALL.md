@@ -5,7 +5,7 @@
 ## 准备条件
 
 - 已安装 uv，终端中执行 `uvx --version` 能正常返回。
-- 已有可用的 Codex 中转站配置，包括 URL、认证方式和模型。中转站须支持 Responses API 的 `image_generation` 工具。
+- 已有可用的 Codex 中转站配置，包括 URL 和认证方式。中转站须支持 Responses API 的 `image_generation` 工具；对话模型可以自动发现或手动指定。
 - 首次启动和更新检查可以联网。uv 会管理所需 Python 和依赖；本项目要求 Python 3.11 及以上。
 
 ## 添加 MCP 配置
@@ -30,7 +30,7 @@ env_vars = []
 
 使用自定义 `CODEX_HOME` 时，文件位于该目录下；还需将该变量转发给 MCP，方法见下文。完整配置文件示例见 [codex-uvx.toml](../examples/codex-uvx.toml)。
 
-保存后重启 Codex，确认 `image_generation` MCP 已加载并提供 `generate_image` 工具。Codex 会按配置启动 stdio 服务，不需要 `serve` 参数，也不用手动维持一个服务终端。
+保存后重启 Codex，确认 MCP 已提供 `generate_image`、`list_models`、`list_image_models`。Codex 会按配置启动 stdio 服务，不需要 `serve` 参数，也不用手动维持一个服务终端。
 
 ## 首次验证
 
@@ -47,8 +47,21 @@ uvx codex-image-generation@latest --check
 | --- | --- |
 | `configured: true` | 本地连接配置可解析 |
 | `connection_verified: false` | 未进行网络验证，是本地检查的正常结果 |
-| `model_available_in_config` | 配置中是否存在可用模型；没有时，调用方需要提供可靠的 `current_model` |
+| `model_available_in_config` | 配置中是否存在回退对话型号；没有时仍可自动发现或显式传 `responses_model` |
+| `responses_model_override` / `image_model_override` | 环境变量设置的固定型号，未设置时为空 |
+| `model_selection_policy` | 自动选择偏好，默认 `quality` |
 | `session_model_auto_detection: false` | 普通 MCP 无法自行确认 Codex 界面的临时模型选择 |
+
+可以先查看模型目录；这些命令会联网，但不会生成图片：
+
+```sh
+uvx codex-image-generation@latest --list-models
+uvx codex-image-generation@latest --list-image-models
+uvx codex-image-generation@latest --list-models --refresh-models
+uvx codex-image-generation@latest --list-image-models --model-policy fast
+```
+
+`--list-image-models` 不需要 provider 凭据。`--list-models` 使用当前中转站认证，只返回对话模型候选和单独的未分类别名。`provider_tool_support_verified: false` 表示列表查询不证明图像工具可执行。列表不可获取时 CLI 返回非零状态，生成仍可使用显式或已有配置中的对话型号。
 
 然后在 Codex 中提出生成需求，例如：
 
@@ -75,8 +88,13 @@ env_vars = ["MY_RELAY_KEY"]
 | `CODEX_HOME` | 自定义 Codex 配置目录 |
 | `CODEX_IMAGE_PROFILE` | 选择已有 profile |
 | `CODEX_IMAGE_TIMEOUT` | 上游请求超时秒数，默认 300，范围大于 0 且不超过 3600 |
+| `CODEX_IMAGE_RESPONSES_MODEL` | 固定顶层对话型号，覆盖自动选择 |
+| `CODEX_IMAGE_MODEL` | 固定图像型号；`upstream_default` 显式使用上游默认路由 |
+| `CODEX_IMAGE_MODEL_POLICY` | 自动推荐策略：`quality`（默认）或 `fast` |
 
 配置检查和 MCP 启动应使用同一份配置及 profile。请求超时超过 300 秒时，相应调大 `tool_timeout_sec`，为本地图片处理留出余量。
+
+模型缓存位于所选 Codex 配置目录的 `cache/image-generation/`，不存储认证值。对话列表有效期 5 分钟，官方目录有效期 24 小时；刷新失败使用旧缓存或标注日期的内置目录。`--refresh-models` 用于主动刷新，不能单独作为服务启动参数。
 
 ## 自动更新与旧配置迁移
 
@@ -100,6 +118,9 @@ env_vars = ["MY_RELAY_KEY"]
 | 终端检查通过，MCP 却缺少凭据 | 确认所需变量名称已加入 `env_vars`，且启动 Codex 的环境中存在对应变量。 |
 | Codex 中找不到工具 | 确认配置保存到了正确文件，没有重复的同名表，并重启 Codex。 |
 | MCP 正常启动，但生成时报上游错误 | 核对中转站对 Responses API、`image_generation` 和所选模型的支持。能聊天不代表支持图片生成。 |
-| 切换界面模型后，返回的模型仍来自配置 | 普通 MCP 无法自动识别临时模型选择；未收到可靠的 `current_model` 时使用配置中的模型。 |
+| MCP 选择的对话模型与界面不同 | 默认独立选择本次 Responses 请求模型；使用 `responses_model` 固定，不会修改 Codex 当前会话。 |
+| `/models` 返回 403、404 或超时 | 列表能力不可用时仍可显式传 `responses_model` 或使用配置回退；不会自动探测付费生成。 |
+| 中转站列表没有 image 型号 | 正常；专用图像型号来自官网，作为 `tools[].model` 发送。 |
+| 中转站拒绝 `tools[].model` | 可明确选择 `image_model=upstream_default`；此模式下实际图像型号未知，不会自动换型号重试。 |
 
 平台仍受 Python 和依赖的兼容性限制，特殊架构或较老系统需要单独验证。反馈问题时只提供脱敏后的相关错误，不要发送 API Key、完整配置或私人图片。

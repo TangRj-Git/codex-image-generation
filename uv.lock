@@ -251,6 +251,7 @@ version = "0.3.0"
 source = { editable = "." }
 dependencies = [
     { name = "fastmcp" },
+    { name = "httpx2" },
     { name = "openai" },
     { name = "pillow" },
 ]
@@ -258,6 +259,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "fastmcp", specifier = ">=4.1.4,<5" },
+    { name = "httpx2", specifier = ">=2.16,<3" },
     { name = "openai", specifier = ">=3.42.0,<4" },
     { name = "pillow", specifier = ">=11.3,<14" },
 ]

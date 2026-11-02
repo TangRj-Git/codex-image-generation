@@ -9,7 +9,7 @@ import tempfile
 import tomllib
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from codex_image_generation.cli import main
 
@@ -75,6 +75,24 @@ class CliTests(unittest.TestCase):
                 with self.assertRaises(SystemExit) as error:
                     main()
                 self.assertEqual(error.exception.code, 2)
+
+    def test_listing_commands_are_json_and_forward_refresh_and_policy(self):
+        for flag, function in (("--list-models", "list_models"), ("--list-image-models", "list_image_models")):
+            with self.subTest(flag=flag), patch("codex_image_generation.server." + function, new_callable=AsyncMock,
+                                                return_value={"models": [], "source": "official"}) as listing:
+                result = json.loads(self.launch([flag, "--refresh-models", "--model-policy", "fast"]))
+            self.assertEqual(result["source"], "official")
+            listing.assert_awaited_once_with(refresh=True, model_policy="fast")
+
+    def test_unavailable_model_list_has_nonzero_exit_and_refresh_needs_list_mode(self):
+        with patch("codex_image_generation.server.list_models", new_callable=AsyncMock,
+                   return_value={"models": [], "source": "unavailable"}):
+            with self.assertRaises(SystemExit) as raised:
+                self.launch(["--list-models"])
+            self.assertEqual(raised.exception.code, 1)
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
+            self.launch(["--refresh-models"])
+        self.assertEqual(raised.exception.code, 2)
 
     def test_check_failure_is_json_and_nonzero(self):
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {}, clear=True), patch(
